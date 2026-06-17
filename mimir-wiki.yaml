@@ -28,11 +28,11 @@ features:
   llm:
     # Default is deterministic only. Use --enable-llm plus a non-none provider,
     # or select the azure-openai profile below, when provider details are ready.
-    enabled: false
+    enabled: true
     tasks:
-      classification: false
+      classification: true
       summary: true
-      keywords: false
+      keywords: true
       themes: true
       concepts: true
       candidate_entities: true
