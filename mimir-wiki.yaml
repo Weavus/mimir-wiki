@@ -50,41 +50,41 @@ features:
 
 llm:
   # none | openai | azure-openai | azure-ai-foundry | openai-compatible
-  provider: none
-  model: none
+  provider: azure-ai-foundry
+  model: gpt-5.5
   prompt_version: enrichment-v1
   task_models:
     classification:
-      provider: azure-openai
-      model: gpt-4.1-mini
+      provider: azure-ai-foundry
+      model: gpt-5.4-mini
       prompt_version: classification-v1
     summary:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
       prompt_version: summary-v1
     keywords:
-      provider: azure-openai
-      model: gpt-4.1-mini
+      provider: azure-ai-foundry
+      model: gpt-5.4-mini
       prompt_version: keywords-v1
     themes:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
       prompt_version: themes-v1
     concepts:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
       prompt_version: concepts-v1
     candidate_entities:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
       prompt_version: candidate-entities-v1
     operational_signals:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
       prompt_version: operational-signals-v1
     quality_warnings:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
       prompt_version: quality-warnings-v1
   temperature: 0
   max_concurrency: 4
@@ -122,8 +122,6 @@ llm:
     endpoint_env: AZURE_AI_FOUNDRY_ENDPOINT
     api_key_env: AZURE_AI_FOUNDRY_API_KEY
     deployment_env: AZURE_AI_FOUNDRY_DEPLOYMENT
-    # auto uses the Responses API for .../openai/v1 endpoints and chat
-    # completions for explicit .../chat/completions endpoints.
     api_mode: auto
   openai_compatible:
     base_url_env: OPENAI_COMPATIBLE_BASE_URL
@@ -132,10 +130,10 @@ llm:
   # Optional. Replace {} with your contracted rates if you want cost reports.
   # Example:
   # costs_usd_per_1k_tokens:
-  #   azure-openai:gpt-4.1:
+  #   azure-openai:gpt-5.5:
   #     input: 0.00
   #     output: 0.00
-  #   gpt-4.1-mini:
+  #   gpt-5.4-mini:
   #     input: 0.00
   #     output: 0.00
   costs_usd_per_1k_tokens: {}
@@ -271,10 +269,10 @@ profiles:
       llm:
         enabled: false
 
-  azure-openai:
+  azure-ai-foundry:
     llm:
-      provider: azure-openai
-      model: gpt-4.1
+      provider: azure-ai-foundry
+      model: gpt-5.5
     features:
       llm:
         enabled: true
