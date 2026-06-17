@@ -21,6 +21,20 @@ from mimir_wiki.utils import (
     slugify,
 )
 
+AGGREGATE_SINGLE_WORD_ALLOWLIST = {
+    "datadog",
+    "dev",
+    "dr",
+    "entitlements",
+    "gitlab",
+    "k6",
+    "leanix",
+    "ppe",
+    "prod",
+    "qa",
+    "uat",
+}
+
 
 def write_enrichment(path: Path, enrichment: Enrichment) -> None:
     atomic_write_json(path, enrichment.model_dump(mode="json"))
@@ -102,6 +116,8 @@ def aggregate_theme_rows(
             documents_by_theme[normalized].add(enrichment.document_id)
     rows = []
     for normalized, documents in documents_by_theme.items():
+        if should_drop_aggregate_taxonomy(normalized, len(documents)):
+            continue
         rows.append(
             ThemeRow(
                 run_id=run_id,
@@ -133,6 +149,8 @@ def aggregate_concept_rows(
             documents_by_concept[normalized].add(enrichment.document_id)
     rows = []
     for normalized, documents in documents_by_concept.items():
+        if should_drop_aggregate_taxonomy(normalized, len(documents)):
+            continue
         rows.append(
             ConceptRow(
                 run_id=run_id,
@@ -152,6 +170,15 @@ def aggregate_concept_rows(
             )
         )
     return sorted(rows, key=lambda row: (row.normalized_concept, row.concept_id))
+
+
+def should_drop_aggregate_taxonomy(normalized: str, document_count: int) -> bool:
+    words = normalized.split()
+    if len(words) != 1:
+        return False
+    if normalized in AGGREGATE_SINGLE_WORD_ALLOWLIST:
+        return False
+    return document_count < 3
 
 
 def aggregate_candidate_entity_rows(
