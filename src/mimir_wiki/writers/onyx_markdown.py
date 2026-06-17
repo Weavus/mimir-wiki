@@ -5,7 +5,7 @@ from pathlib import Path
 
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
-from mimir_wiki.schemas import Enrichment, WarningRecord
+from mimir_wiki.schemas import CandidateEntity, Enrichment, WarningRecord
 from mimir_wiki.utils import atomic_write_text, json_dumps, slugify, strip_front_matter
 
 SECRET_PATTERNS = {
@@ -29,10 +29,38 @@ SECRET_PATTERNS = {
     "password_assignment": re.compile(r"(?i)\b(password|passwd|pwd)\s*[:=]\s*[^\s`]+"),
 }
 
+GENERIC_ENTITY_NAMES = {
+    "api",
+    "business",
+    "business document",
+    "business documents",
+    "configuration",
+    "database",
+    "database configuration",
+    "document",
+    "documents",
+    "here",
+    "information",
+    "open",
+    "performance",
+    "technical",
+    "technical document",
+}
+GENERIC_KEY_FACT_TERMS = GENERIC_ENTITY_NAMES | {
+    "configuration",
+    "here",
+    "information",
+}
+
 
 def onyx_output_path(root: Path, dataset_name: str, bundle: PageBundle, config: AppConfig) -> Path:
     slug = slugify(bundle.metadata.title, config.onyx_poc.slug_max_chars)
     return root / dataset_name / bundle.metadata.space_key / f"{bundle.metadata.page_id}-{slug}.md"
+
+
+def display_title(title: str) -> str:
+    cleaned = re.sub(r"^\s*\d+(?:\.\d+)*\.?\s+", "", title).strip()
+    return cleaned or title
 
 
 def render_markdown(
@@ -44,18 +72,21 @@ def render_markdown(
 ) -> tuple[str, list[str]]:
     metadata = enrichment.ONYX_METADATA.model_dump(mode="json", exclude_none=True)
     first_line = f"#ONYX_METADATA={json_dumps(metadata)}"
+    title = display_title(bundle.metadata.title)
     truncation_warnings: list[str] = []
     source = strip_front_matter(bundle.clean_markdown)
     if len(source) > config.onyx_poc.max_source_content_chars:
         source = source[: config.onyx_poc.max_source_content_chars]
         truncation_warnings.append("source_content_truncated_for_onyx")
+    key_fact_lines = render_key_facts(bundle, enrichment)
+    source_link_lines = render_source_links(bundle)
     keyword_lines = "\n".join(f"- {keyword}" for keyword in enrichment.keywords) or "- none"
     theme_lines = "\n".join(f"- {theme}" for theme in enrichment.themes) or "- none"
     concept_lines = "\n".join(f"- {concept}" for concept in enrichment.concepts) or "- none"
     entity_lines = (
         "\n".join(
             f"- {entity.name} ({entity.entity_type}, confidence {entity.confidence:.2f})"
-            for entity in enrichment.candidate_entities[:40]
+            for entity in display_candidate_entities(enrichment.candidate_entities)[:30]
         )
         or "- none"
     )
@@ -63,11 +94,11 @@ def render_markdown(
     source_section = f"\n## Source Content\n\n{source}\n" if include_source_content else ""
     body = f"""
 
-# {bundle.metadata.title}
+# {title}
 
 > Source-enriched Confluence document. Not approved curated knowledge.
 
-## Enrichment Summary
+## Answer Summary
 
 {enrichment.short_summary}
 
@@ -76,6 +107,18 @@ def render_markdown(
 Document type: `{enrichment.document_type}` ({enrichment.document_type_confidence:.2f})
 Quality band: `{enrichment.quality_band}` ({enrichment.quality.overall_score}/100)
 Currentness: `{enrichment.currentness}`
+
+## Key Facts
+
+{key_fact_lines}
+
+## Source Links
+
+{source_link_lines}
+
+{source_section}
+
+## Enrichment Details
 
 ## Keywords
 
@@ -116,8 +159,120 @@ Source updated at: {enrichment.source_updated_at or "unknown"}
 Source content hash: {enrichment.source_content_hash}
 Source URL: {bundle.metadata.url or "unknown"}
 Attachment count: {len(bundle.attachment_names)}
-{source_section}"""
+"""
     return first_line + body, truncation_warnings
+
+
+def display_candidate_entities(entities: list[CandidateEntity]) -> list[CandidateEntity]:
+    selected: list[CandidateEntity] = []
+    seen: set[tuple[str, str]] = set()
+    for entity in sorted(
+        entities,
+        key=lambda item: (
+            item.method != "llm",
+            -item.confidence,
+            item.entity_type,
+            item.name.lower(),
+        ),
+    ):
+        normalized = entity.normalized_name.lower()
+        if normalized in GENERIC_ENTITY_NAMES:
+            continue
+        if entity.method != "llm" and entity.confidence < 0.7:
+            continue
+        key = (entity.entity_type, normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(entity)
+    return selected
+
+
+def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
+    facts: list[str] = []
+    title = display_title(bundle.metadata.title)
+    facts.append(f"- Page title: {title}")
+    if title != bundle.metadata.title:
+        facts.append(f"- Original source title: {bundle.metadata.title}")
+    facts.append(f"- Source space: {bundle.metadata.space_key}")
+    facts.append(f"- Document type: {enrichment.document_type}")
+    facts.append(f"- Currentness: {enrichment.currentness}")
+    if bundle.metadata.updated_at:
+        facts.append(f"- Source updated at: {bundle.metadata.updated_at}")
+    for label, values in (
+        ("Applications", enrichment.entities.get("applications", [])),
+        ("Databases", enrichment.entities.get("databases", [])),
+        ("Queues", enrichment.entities.get("queues", [])),
+        ("Dashboards", enrichment.entities.get("dashboards", [])),
+        ("Support groups", enrichment.entities.get("support_groups", [])),
+        ("Teams", enrichment.entities.get("teams", [])),
+    ):
+        cleaned = [value for value in values if value.lower() not in GENERIC_ENTITY_NAMES]
+        if cleaned:
+            facts.append(f"- {label}: {', '.join(cleaned)}")
+    for label, entity_types in (
+        ("Database services", {"database_service"}),
+        ("Database instances", {"database_instance"}),
+        ("Regions", {"aws_region", "region"}),
+        ("APIs", {"api"}),
+        ("Platforms", {"platform"}),
+    ):
+        values = high_confidence_entities_by_type(enrichment, entity_types)
+        if values:
+            facts.append(f"- {label}: {', '.join(values)}")
+    if enrichment.keywords:
+        terms = [
+            keyword
+            for keyword in enrichment.keywords
+            if keyword.lower() not in GENERIC_KEY_FACT_TERMS
+        ][:10]
+        if terms:
+            facts.append(f"- Important terms: {', '.join(terms)}")
+    if enrichment.operational_signals.has_owner:
+        facts.append("- Owner signal: present")
+    if enrichment.operational_signals.has_support_group:
+        facts.append("- Support group signal: present")
+    if enrichment.operational_signals.has_dependencies:
+        facts.append("- Dependency signal: present")
+    if enrichment.operational_signals.has_recovery_steps:
+        facts.append("- Recovery/failover signal: present")
+    if bundle.attachment_names:
+        facts.append(f"- Attachments: {', '.join(bundle.attachment_names[:10])}")
+    return "\n".join(facts) if facts else "- none"
+
+
+def high_confidence_entities_by_type(enrichment: Enrichment, entity_types: set[str]) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for entity in sorted(
+        enrichment.candidate_entities,
+        key=lambda item: (item.method != "llm", -item.confidence, item.name.lower()),
+    ):
+        if entity.entity_type not in entity_types or entity.confidence < 0.75:
+            continue
+        normalized = entity.normalized_name.lower()
+        if normalized in seen or normalized in GENERIC_ENTITY_NAMES:
+            continue
+        seen.add(normalized)
+        values.append(entity.name)
+    return values
+
+
+def render_source_links(bundle: PageBundle) -> str:
+    if not bundle.links.links:
+        return "- none"
+    lines: list[str] = []
+    seen: set[str] = set()
+    for index, link in enumerate(bundle.links.links[:25], start=1):
+        href = link.href or ""
+        if not href or href in seen:
+            continue
+        seen.add(href)
+        label = (link.text or link.target_title or f"Source link {index}").strip()
+        if label.lower() in {"here", "link", "click here"}:
+            label = f"Referenced source link {index}"
+        lines.append(f"- {label}: {href}")
+    return "\n".join(lines) if lines else "- none"
 
 
 def apply_redaction(content: str, config: AppConfig) -> tuple[str, list[str]]:

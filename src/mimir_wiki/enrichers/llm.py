@@ -17,6 +17,7 @@ from mimir_wiki.constants import DOCUMENT_TYPES
 from mimir_wiki.enrichers.deterministic import (
     categories_for,
     entity_bucket,
+    has_linked_procedure,
     warnings_for,
 )
 from mimir_wiki.llm.base import (
@@ -86,7 +87,7 @@ class LLMCandidateEntity(LLMTaskModel):
     entity_type: str = Field(min_length=1, max_length=80)
     aliases: list[str] = Field(default_factory=list, max_length=20)
     confidence: float = Field(ge=0, le=1, default=0.65)
-    evidence: str = Field(min_length=1, max_length=240)
+    evidence: str = Field(min_length=1, max_length=2000)
 
 
 class CandidateEntitiesResponse(LLMTaskModel):
@@ -434,6 +435,7 @@ def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: 
         signals=enrichment.operational_signals,
         status_flags=enrichment.status_flags,
         attachment_count=len(bundle.attachment_names),
+        has_linked_procedure=has_linked_procedure(bundle),
     )
     enrichment.warnings = _merge_strings(custom_warnings, recalculated, 60)
     enrichment.confidence = min(

@@ -43,16 +43,94 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     onyx_files = list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
     assert len(onyx_files) == 1
     first_line = onyx_files[0].read_text(encoding="utf-8").splitlines()[0]
+    onyx_content = onyx_files[0].read_text(encoding="utf-8")
     assert first_line.startswith("#ONYX_METADATA=")
     metadata = json.loads(first_line.removeprefix("#ONYX_METADATA="))
     assert metadata["link"] == "https://confluence.example.com/pages/viewpage.action?pageId=123"
     assert metadata["file_display_name"] == "ForgeRock Support Runbook"
     assert metadata["doc_updated_at"] == "2026-05-01T12:45:00Z"
     assert "run_id" not in metadata
+    assert "## Answer Summary" in onyx_content
+    assert "## Key Facts" in onyx_content
+    assert onyx_content.index("## Source Content") < onyx_content.index("## Enrichment Details")
     assert (tmp_path / "reports" / "enrichment_summary.md").exists()
     assert (tmp_path / "reports" / "duplicate_candidates.md").exists()
     assert (tmp_path / "reports" / "llm_usage.md").exists()
     assert any((tmp_path / "runs").glob("*/summary.json"))
+
+
+def test_onyx_markdown_strips_outline_number_from_display_title(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "1.1.1 Database information"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+    content = onyx_file.read_text(encoding="utf-8")
+    assert "# Database information" in content
+    assert "- Page title: Database information" in content
+    assert "- Original source title: 1.1.1 Database information" in content
+
+
+def test_linked_failover_procedure_suppresses_missing_backout_warning(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\nFailover procedures are documented and available [here](https://example.com/failover).\n",
+        encoding="utf-8",
+    )
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text(
+        text_path.read_text(encoding="utf-8")
+        + " Failover procedures are documented and available here.",
+        encoding="utf-8",
+    )
+    links_path = tiny_cache / "pages" / "123" / "links.json"
+    links = json.loads(links_path.read_text(encoding="utf-8"))
+    links["links"].append(
+        {
+            "type": "external_url",
+            "href": "https://example.com/failover",
+            "text": "here",
+            "crawlable": False,
+            "target_page_id": None,
+            "target_space_key": None,
+            "target_title": None,
+        }
+    )
+    links_path.write_text(json.dumps(links), encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert "linked_procedure_not_expanded" in enrichment["warnings"]
+    assert "missing_backout_steps" not in enrichment["warnings"]
 
 
 def test_enrich_uses_page_workers_for_multiple_pages(tiny_cache: Path, tmp_path: Path) -> None:

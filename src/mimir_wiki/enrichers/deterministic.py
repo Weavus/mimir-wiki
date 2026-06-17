@@ -375,13 +375,22 @@ def extract_candidate_facts(
                 add_fact("supported_by", support_match.group(1), 0.5, stripped)
 
         step_specs = [
-            ("has_diagnostic_step", ("check", "verify", "diagnos", "triage")),
-            ("has_recovery_step", ("restart", "recover", "restore", "mitigate", "fix")),
-            ("has_validation_step", ("validate", "validation", "confirm")),
-            ("has_backout_step", ("rollback", "roll back", "backout", "back out")),
+            (
+                "has_diagnostic_step",
+                (r"\bcheck\b", r"\bverify\b", r"\bdiagnos\w*\b", r"\btriage\b"),
+            ),
+            (
+                "has_recovery_step",
+                (r"\brestart\b", r"\brecover\b", r"\brestore\b", r"\bmitigate\b", r"\bfix\b"),
+            ),
+            ("has_validation_step", (r"\bvalidate\b", r"\bvalidation\b", r"\bconfirm\b")),
+            (
+                "has_backout_step",
+                (r"\brollback\b", r"\broll back\b", r"\bbackout\b", r"\bback out\b"),
+            ),
         ]
-        for predicate, markers in step_specs:
-            if any(marker in lowered for marker in markers):
+        for predicate, patterns in step_specs:
+            if any(re.search(pattern, lowered) for pattern in patterns):
                 add_fact(predicate, stripped, 0.45, stripped)
 
         if len(facts) >= 20:
@@ -465,6 +474,7 @@ def warnings_for(
     signals: OperationalSignals,
     status_flags: list[str],
     attachment_count: int,
+    has_linked_procedure: bool = False,
 ) -> list[str]:
     warnings: list[str] = []
     if "deprecated" in status_flags or "archived" in status_flags:
@@ -476,10 +486,35 @@ def warnings_for(
     if document_type == "runbook" and not signals.has_validation_steps:
         warnings.append("missing_validation_steps")
     if document_type == "runbook" and not signals.has_backout_steps:
-        warnings.append("missing_backout_steps")
+        if has_linked_procedure:
+            warnings.append("linked_procedure_not_expanded")
+        else:
+            warnings.append("missing_backout_steps")
     if attachment_count:
         warnings.append("attachments_present_not_parsed")
     return warnings
+
+
+def has_linked_procedure(bundle: PageBundle) -> bool:
+    if not bundle.links.links:
+        return False
+    text = f"{bundle.metadata.title}\n{bundle.text}".lower()
+    procedure_terms = (
+        "backout procedure",
+        "backout procedures",
+        "failover procedure",
+        "failover procedures",
+        "rollback procedure",
+        "rollback procedures",
+        "recovery procedure",
+        "recovery procedures",
+        "procedure is documented",
+        "procedures are documented",
+        "steps required",
+    )
+    if not any(term in text for term in procedure_terms):
+        return False
+    return any(link.href for link in bundle.links.links)
 
 
 def enrich_page(
@@ -520,6 +555,7 @@ def enrich_page(
         signals=signals,
         status_flags=flags,
         attachment_count=len(bundle.attachment_names),
+        has_linked_procedure=has_linked_procedure(bundle),
     )
     onyx = OnyxMetadata(
         link=bundle.metadata.url or "",
