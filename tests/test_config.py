@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mimir_wiki.config import apply_runtime_overrides, load_config
-from mimir_wiki.llm.base import ChatCompletionProvider, provider_for_config
+from mimir_wiki.llm.base import ChatCompletionProvider, ResponsesProvider, provider_for_config
 
 
 def test_config_precedence_and_secret_redaction(tmp_path: Path, monkeypatch) -> None:
@@ -46,9 +46,15 @@ def test_example_config_loads() -> None:
     assert config.paths.knowledge == "./knowledge"
 
 
-def test_example_azure_profile_loads() -> None:
+def test_example_azure_profile_loads(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("MIMIR_WIKI_PROVIDER", raising=False)
+    monkeypatch.delenv("MIMIR_WIKI_LLM_ENABLED", raising=False)
     repo_root = Path(__file__).resolve().parents[1]
-    config = load_config(config_path=repo_root / "mimir-wiki.yaml.example", profile="azure-openai")
+    config = load_config(
+        config_path=repo_root / "mimir-wiki.yaml.example",
+        profile="azure-openai",
+        env_file=tmp_path / "missing.env",
+    )
     assert config.llm.provider == "azure-openai"
     assert config.features.llm.enabled is True
     assert config.llm.route_for("summary").provider == "azure-openai"
@@ -168,3 +174,36 @@ features:
     assert provider.url == "https://foundry.example/models/chat/completions"
     assert provider.headers["api-key"] == "foundry-key"
     assert provider.default_model == "foundry-deployment"
+
+
+def test_azure_ai_foundry_provider_uses_responses_for_openai_v1_endpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        """
+llm:
+  provider: azure-ai-foundry
+  model: gpt-5.5
+  azure_ai_foundry:
+    endpoint_env: TEST_FOUNDRY_ENDPOINT
+    api_key_env: TEST_FOUNDRY_API_KEY
+    deployment_env: TEST_FOUNDRY_DEPLOYMENT
+    api_mode: auto
+features:
+  llm:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "TEST_FOUNDRY_ENDPOINT", "https://foundry.example.services.ai.azure.com/openai/v1"
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_API_KEY", "foundry-key")
+    monkeypatch.setenv("TEST_FOUNDRY_DEPLOYMENT", "gpt-5.5")
+    config = load_config(config_path=config_file)
+    provider = provider_for_config(config)
+    assert isinstance(provider, ResponsesProvider)
+    assert provider.url == "https://foundry.example.services.ai.azure.com/openai/v1/responses"
+    assert provider.headers["Authorization"] == "Bearer foundry-key"
+    assert provider.default_model == "gpt-5.5"

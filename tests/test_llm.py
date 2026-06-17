@@ -13,6 +13,7 @@ from mimir_wiki.llm.base import (
     LLMRequest,
     LLMResponse,
     RateLimitedLLMClient,
+    ResponsesProvider,
 )
 
 
@@ -201,3 +202,41 @@ def test_chat_completion_provider_detects_auth_failure() -> None:
         assert exc.retryable is False
     else:  # pragma: no cover
         raise AssertionError("expected LLMError")
+
+
+async def _complete_with_responses_provider() -> tuple[LLMResponse, list[dict]]:
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5.5",
+                "output": [
+                    {"content": [{"type": "output_text", "text": '{"short_summary":"ok"}'}]}
+                ],
+                "usage": {"input_tokens": 13, "output_tokens": 5},
+            },
+        )
+
+    provider = ResponsesProvider(
+        provider_name="azure-ai-foundry",
+        url="https://example.services.ai.azure.com/openai/v1/responses",
+        headers={"Authorization": "Bearer test"},
+        default_model="gpt-5.5",
+        timeout_seconds=1,
+        transport=httpx.MockTransport(handler),
+    )
+    response = await provider.complete(LLMRequest(task="summary", prompt="hello"))
+    return response, requests
+
+
+def test_responses_provider_posts_model_and_extracts_output_text() -> None:
+    response, requests = asyncio.run(_complete_with_responses_provider())
+    assert response.text == '{"short_summary":"ok"}'
+    assert response.model == "gpt-5.5"
+    assert response.input_tokens == 13
+    assert response.output_tokens == 5
+    assert requests[0]["model"] == "gpt-5.5"
+    assert "hello" in requests[0]["input"]

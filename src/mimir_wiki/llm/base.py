@@ -133,6 +133,93 @@ class ChatCompletionProvider:
         )
 
 
+class ResponsesProvider:
+    def __init__(
+        self,
+        *,
+        provider_name: str,
+        url: str,
+        headers: dict[str, str],
+        default_model: str,
+        timeout_seconds: float,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.provider_name = provider_name
+        self.url = url
+        self.headers = headers
+        self.default_model = default_model
+        self.timeout_seconds = timeout_seconds
+        self.transport = transport
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        model = request.model or self.default_model
+        payload = {
+            "model": model,
+            "input": (
+                "Return only valid JSON. Ground every claim in the supplied document.\n\n"
+                f"{request.prompt}"
+            ),
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds, transport=self.transport
+            ) as client:
+                response = await client.post(self.url, headers=self.headers, json=payload)
+        except httpx.TimeoutException as exc:
+            raise LLMError("LLM request timed out", retryable=True, error_type="timeout") from exc
+        except httpx.TransportError as exc:
+            raise LLMError(
+                f"LLM connection error: {exc}", retryable=True, error_type="connection_error"
+            ) from exc
+        if response.status_code >= 400:
+            raise _http_error(response)
+        data = response.json()
+        usage = data.get("usage") or {}
+        return LLMResponse(
+            text=_extract_responses_text(data),
+            model=str(data.get("model") or model),
+            input_tokens=usage.get("input_tokens") or usage.get("prompt_tokens"),
+            output_tokens=usage.get("output_tokens") or usage.get("completion_tokens"),
+        )
+
+
+def _extract_responses_text(data: dict[str, Any]) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+    output = data.get("output")
+    if isinstance(output, list):
+        texts: list[str] = []
+        for item in output:
+            if isinstance(item, str):
+                texts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str):
+                        texts.append(part)
+                    elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                        texts.append(part["text"])
+            elif isinstance(content, str):
+                texts.append(content)
+            elif isinstance(item.get("text"), str):
+                texts.append(item["text"])
+        if texts:
+            return "\n".join(texts)
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, dict):
+            message = choice.get("message") or {}
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str):
+                return content
+    return ""
+
+
 def _http_error(response: httpx.Response) -> LLMError:
     retry_after: float | None = None
     retry_after_value = response.headers.get("Retry-After")
@@ -323,6 +410,17 @@ def provider_for_config(config: AppConfig) -> LLMProvider:
             os.environ.get(deployment_env, config.llm.model) if deployment_env else config.llm.model
         )
         url = endpoint.rstrip("/")
+        api_mode = str(config.llm.azure_ai_foundry.get("api_mode") or "auto")
+        if api_mode == "responses" or url.endswith("/openai/v1") or "/openai/v1/" in url:
+            if not url.endswith("/responses"):
+                url = f"{url}/responses"
+            return ResponsesProvider(
+                provider_name="azure-ai-foundry",
+                url=url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                default_model=model,
+                timeout_seconds=config.llm.timeout_seconds,
+            )
         if not url.endswith("/chat/completions"):
             url = f"{url}/chat/completions"
         return ChatCompletionProvider(

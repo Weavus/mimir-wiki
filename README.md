@@ -169,6 +169,29 @@ AZURE_OPENAI_DEPLOYMENT=gpt-4.1
 AZURE_OPENAI_API_VERSION=2025-01-01-preview
 ```
 
+For Azure AI Foundry OpenAI v1 endpoints like the Foundry sample code:
+
+```dotenv
+AZURE_AI_FOUNDRY_ENDPOINT=https://example.services.ai.azure.com/openai/v1
+AZURE_AI_FOUNDRY_API_KEY=...
+AZURE_AI_FOUNDRY_DEPLOYMENT=gpt-5.5
+```
+
+Use:
+
+```yaml
+llm:
+  provider: azure-ai-foundry
+  model: gpt-5.5
+  azure_ai_foundry:
+    endpoint_env: AZURE_AI_FOUNDRY_ENDPOINT
+    api_key_env: AZURE_AI_FOUNDRY_API_KEY
+    deployment_env: AZURE_AI_FOUNDRY_DEPLOYMENT
+    api_mode: auto
+```
+
+No `AZURE_OPENAI_API_VERSION` is needed for the Foundry `/openai/v1` Responses API path.
+
 Then run with a profile or flags:
 
 ```bash
