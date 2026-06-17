@@ -4,6 +4,19 @@
 outputs are deterministic enrichment artifacts, stable JSONL indexes, reports,
 and Onyx POC Markdown with first-line `#ONYX_METADATA={...}` metadata.
 
+The current MVP1 implementation includes cache validation, deterministic and
+optional LLM enrichment, task bundling, durable LLM response caching, hierarchy
+context, quality scoring, JSONL indexes, Onyx POC Markdown, reports, schema
+export, structured logs, page concurrency, and graceful cancellation.
+
+## Documentation
+
+- [CLI reference](docs/cli.md)
+- [Workflow guide](docs/workflow.md)
+- [Architecture](docs/architecture.md)
+- [MVP specification](mimir_wiki_spec.md)
+- [Workflow goal specification](mimir_workflow_goal_spec.md)
+
 ## Setup
 
 ```bash
@@ -254,6 +267,7 @@ With these bundles enabled, the default eight tasks become three calls per page:
 - `knowledge/facts.jsonl`
 - `dist/onyx-enriched/{dataset_name}/{space_key}/{page_id}-{slug}.md`
 - `reports/*.md`
+- `reports/high_value_subtrees.md` includes hierarchy-derived subtree rollups.
 - `runs/{run_id}/summary.json`
 - `runs/{run_id}/page_failures.jsonl`
 - `runs/{run_id}/warnings.jsonl`

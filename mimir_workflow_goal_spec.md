@@ -1,5 +1,12 @@
 # Mimir Workflow and Goal Specification
 
+**Implementation note:** `mimir-wiki` MVP1 is now implemented as a Python CLI.
+It validates `mimir-confluence` caches, enriches pages, captures hierarchy
+context, writes stable JSONL indexes, produces Onyx POC Markdown and reports,
+and supports optional LLM enrichment through OpenAI, Azure OpenAI, Azure AI
+Foundry and OpenAI-compatible providers. Operator documentation lives in
+`README.md`, `docs/cli.md`, `docs/workflow.md` and `docs/architecture.md`.
+
 ## 1. Purpose
 
 Mimir is a personal operational knowledge system designed to turn messy, stale, scattered work documentation into a curated, human-reviewed, AI-searchable knowledge base.

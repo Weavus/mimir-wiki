@@ -8,6 +8,51 @@ reviewable, human-maintained Markdown knowledge.
 **MVP 1 goal:** Enrich and inventory exported Confluence content so it can be
 tested in Onyx and used to plan later curated wiki generation.
 
+**Implementation status:** MVP1 is implemented in `src/mimir_wiki/`. Current
+operator documentation lives in `README.md`, `docs/cli.md`, `docs/workflow.md`
+and `docs/architecture.md`. This specification remains the design intent and is
+augmented by the implementation notes below.
+
+---
+
+## 0. Implemented MVP1 Addendum
+
+The current implementation extends the original MVP1 contract with these
+operational details:
+
+- CLI commands are `validate-cache`, `enrich`, `report` and `export-schema`.
+- Generated artifacts include `schema_version: mimir-wiki/v1` and are written
+  with atomic writes.
+- `.env` is loaded for provider credentials and proxy settings, while YAML stores
+  environment variable names rather than secret values.
+- LLM providers include `none`, `openai`, `azure-openai`, `azure-ai-foundry` and
+  `openai-compatible`.
+- Azure AI Foundry supports OpenAI v1 Responses API endpoints such as
+  `https://...services.ai.azure.com/openai/v1` without `api-version`.
+- LLM task bundles can combine semantic tasks and operational tasks to reduce
+  provider calls while preserving task-specific merge semantics.
+- LLM responses are cached by source hash, prompt text, prompt version,
+  provider, model, task or bundle and enrichment config hash.
+- Per-page hierarchy context is computed and stored in enrichment artifacts,
+  document index rows, LLM prompt metadata and Onyx Key Facts.
+- Hierarchy context includes depth, parent/root title, section path, page role,
+  parent context type, sibling count and child count.
+- Onyx POC Markdown uses a retrieval-oriented body order: Answer Summary, Key
+  Facts, Source Links, Source Content, Additional Source Links, Enrichment
+  Details and Source Metadata.
+- Onyx Markdown rewrites source images to concise placeholders and prioritizes
+  useful source links before full link inventories.
+- Taxonomy terms are filtered at page level and aggregate level to reduce
+  generic keywords, themes and concepts while preserving useful phrases.
+- Reports include high-value hierarchy subtrees, duplicate candidates, LLM usage,
+  page failures, attachment followups, missing owners and source quality views.
+- Page processing uses bounded worker concurrency and supports graceful
+  cancellation with partial run artifacts.
+- `export-schema` writes JSON Schema files for generated artifact contracts.
+
+These implemented details should be treated as part of the current MVP1 behavior
+unless a later spec revision supersedes them.
+
 ---
 
 ## 1. Executive Summary

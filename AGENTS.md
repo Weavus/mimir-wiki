@@ -2,24 +2,34 @@
 
 ## Current Status
 
-This repository is currently a specification/workspace for `mimir-wiki`, not an
-implemented Python package yet.
+This repository now contains an implemented MVP1 Python package for
+`mimir-wiki`.
 
 Key files:
 
+- `README.md` - quickstart and documentation index
+- `docs/cli.md` - full CLI reference
+- `docs/workflow.md` - end-to-end validation/enrichment/reporting workflows
+- `docs/architecture.md` - package architecture and artifact contracts
 - `mimir_wiki_spec.md` - main implementation specification for `mimir-wiki`
 - `mimir_workflow_goal_spec.md` - wider Mimir workflow and design context
+- `src/mimir_wiki/` - implemented package
+- `tests/` - unit and smoke tests
 - `cache/` - example `mimir-confluence` exports to use when validating
   assumptions about real input data
 
-Do not assume `src/`, `tests/`, `pyproject.toml`, or CLI commands exist until
-they have been created in this repo.
+Implemented CLI commands:
+
+- `mimir-wiki validate-cache`
+- `mimir-wiki enrich`
+- `mimir-wiki report`
+- `mimir-wiki export-schema`
 
 ## Intended Setup
 
-When implementation begins, use Python >=3.13 and `uv` as the package manager.
+Use Python >=3.13 and `uv` as the package manager.
 
-Expected future setup:
+Setup:
 
 ```bash
 uv sync --extra dev
@@ -34,7 +44,7 @@ UV_CACHE_DIR=.uv-cache uv run --extra dev mypy src
 UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
 ```
 
-If `scripts/quality.sh` is added later, it should wrap the same checks.
+`scripts/quality.sh` wraps these checks.
 
 ## Project Purpose
 
@@ -47,7 +57,8 @@ Primary workflow:
 ```text
 mimir-confluence cache
   -> validation and enrichment
-  -> document/theme/concept/quality indexes
+  -> document/theme/concept/quality/entity/fact indexes
+  -> hierarchy context and page-role enrichment
   -> Onyx POC enriched Markdown in dist/onyx-enriched
   -> enrichment reports
   -> later compiled Markdown in an Obsidian-compatible vault
@@ -126,18 +137,20 @@ Recommended first modules once `src/` exists:
   candidate entities
 - config loader for `mimir-wiki.yaml`, `.env` and environment variables
 - deterministic document classification and quality signals
+- deterministic hierarchy context, page role and parent-context signals
 - deterministic `--provider none` enrichment path for tests
 - LLM provider interface with OpenAI, Azure OpenAI and Azure AI Foundry
   implementations for semantic enrichment
 - task-specific model routing for classification, summaries, keywords, themes,
   concepts, candidate entities, operational signals and quality warnings
+- optional LLM task bundles for semantic and operational enrichment
 - general document classification, with RCA-oriented signals enabled when a
   cache contains RCA-heavy content
 - Onyx POC Markdown export under `dist/onyx-enriched/{dataset_name}/` with
   required first-line `#ONYX_METADATA={...}` JSON containing `link`,
   `file_display_name`, and `doc_updated_at`
 - enrichment reports that summarize document types, themes, stale/deprecated
-  pages and high-value sources
+  pages, high-value sources and high-value hierarchy subtrees
 
 Recommended package boundaries:
 
