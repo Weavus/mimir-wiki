@@ -86,6 +86,94 @@ def test_onyx_markdown_strips_outline_number_from_display_title(
     assert "- Original source title: 1.1.1 Database information" in content
 
 
+def test_performance_test_subtype_maps_unknown_to_reference(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "2024/09/25 Pre-prod Load testing result (K6)"
+    metadata["labels"] = []
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        "# 2024/09/25 Pre-prod Load testing result (K6)\n\nActual throughput was 73 req/s.",
+        encoding="utf-8",
+    )
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text("Pre-prod Load testing result K6 throughput report", encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["document_subtype"] == "performance_test_report"
+    assert enrichment["document_type"] == "reference"
+
+
+def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path: Path) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![Architecture](https://example.com/path/diagram.png?x=1)\n",
+        encoding="utf-8",
+    )
+    links_path = tiny_cache / "pages" / "123" / "links.json"
+    links = json.loads(links_path.read_text(encoding="utf-8"))
+    links["links"] = [
+        {
+            "type": "external_url",
+            "href": f"https://example.com/runbook-{index}",
+            "text": f"Runbook {index}",
+            "crawlable": False,
+            "target_page_id": None,
+            "target_space_key": None,
+            "target_title": None,
+        }
+        for index in range(10)
+    ]
+    links["links"].append(
+        {
+            "type": "external_url",
+            "href": "mailto:test@example.com",
+            "text": "test@example.com",
+            "crawlable": False,
+            "target_page_id": None,
+            "target_space_key": None,
+            "target_title": None,
+        }
+    )
+    links_path.write_text(json.dumps(links), encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+    content = onyx_file.read_text(encoding="utf-8")
+    early_links = content.split("## Source Content", maxsplit=1)[0]
+    assert early_links.count("https://example.com/runbook-") == 8
+    assert "## Additional Source Links" in content
+    assert "mailto:test@example.com" in content.split("## Additional Source Links", maxsplit=1)[1]
+    assert "Image omitted from source export: Architecture" in content
+
+
 def test_linked_failover_procedure_suppresses_missing_backout_warning(
     tiny_cache: Path, tmp_path: Path
 ) -> None:

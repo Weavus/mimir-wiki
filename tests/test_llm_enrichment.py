@@ -28,6 +28,14 @@ class JsonProvider:
                 {
                     "short_summary": "Bundled short summary.",
                     "detailed_summary": "Bundled detailed summary.",
+                    "key_facts": [
+                        {
+                            "label": "Primary service",
+                            "value": "ForgeRock",
+                            "confidence": 0.8,
+                            "evidence": "ForgeRock Support Runbook",
+                        }
+                    ],
                     "themes": ["identity operations"],
                 }
             )
@@ -45,6 +53,14 @@ class JsonProvider:
                     ],
                     "operational_signals": {"has_support_group": True},
                     "warnings": ["missing backout steps"],
+                    "key_facts": [
+                        {
+                            "label": "Support group",
+                            "value": "Identity SRE",
+                            "confidence": 0.8,
+                            "evidence": "Support group: Identity L3",
+                        }
+                    ],
                 }
             )
         elif request.task == "summary":
@@ -212,6 +228,10 @@ def test_llm_task_bundles_reduce_calls_and_merge_outputs(tiny_cache: Path, tmp_p
     assert "identity operations" in result.enrichment.themes
     assert result.enrichment.operational_signals.has_support_group is True
     assert "missing_backout_steps" in result.enrichment.warnings
+    assert {fact.label for fact in result.enrichment.key_facts} == {
+        "Primary service",
+        "Support group",
+    }
     assert any(entity.name == "Identity SRE" for entity in result.enrichment.candidate_entities)
 
 

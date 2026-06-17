@@ -75,26 +75,49 @@ GENERIC_ENTITY_TERMS = {
 
 GENERIC_TAXONOMY_TERMS = GENERIC_ENTITY_TERMS | {
     "admin",
+    "application",
     "api",
+    "asset insight",
+    "change",
     "ciame",
+    "configuration",
     "confluence",
+    "confluence refinitiv com pages viewpage action",
     "customer identity and access management",
     "customer identity and access management entra",
+    "deployment",
+    "deployments",
+    "details",
     "document",
     "documents",
+    "failed",
+    "for individual users",
+    "guide",
     "here",
+    "https",
     "iam",
+    "installation",
+    "linking",
     "load",
     "open",
+    "overview",
+    "pageid",
     "pre",
+    "pre requisite steps",
+    "previous",
+    "question",
     "reference",
     "region",
+    "release schedule",
+    "response",
     "runbook",
     "scim",
+    "service",
     "summary",
     "technical",
     "test",
     "user",
+    "verify",
 }
 SHORT_TAXONOMY_ALLOWLIST = {"dev", "qa", "ppe", "prod", "k6", "uat", "dr"}
 
@@ -237,7 +260,22 @@ def extract_keywords(bundle: PageBundle, headings: list[str], max_terms: int = 1
 def clean_taxonomy_term(value: str) -> str:
     normalized = normalize_term(value)
     normalized = re.sub(r"^(?:\d+\s+){2,}", "", normalized).strip()
+    normalized = re.sub(r"^\d+\s+(?=[a-z])", "", normalized).strip()
     return normalized
+
+
+def is_noisy_taxonomy_term(value: str) -> bool:
+    words = value.split()
+    if value in GENERIC_TAXONOMY_TERMS:
+        return True
+    if value.startswith(("http ", "https ")) or " http " in f" {value} ":
+        return True
+    if any(fragment in value for fragment in ("viewpage action", "pageid", "confluence refinitiv")):
+        return True
+    numeric_tokens = sum(1 for word in words if word.isdigit())
+    if numeric_tokens >= 3 and len(words) >= 6:
+        return True
+    return len(words) == 1 and value not in SHORT_TAXONOMY_ALLOWLIST and len(value) < 5
 
 
 def filter_taxonomy_terms(values: list[str], *, max_terms: int | None = None) -> list[str]:
@@ -247,7 +285,7 @@ def filter_taxonomy_terms(values: list[str], *, max_terms: int | None = None) ->
         cleaned = clean_taxonomy_term(value)
         if not cleaned or cleaned in seen:
             continue
-        if cleaned in GENERIC_TAXONOMY_TERMS:
+        if is_noisy_taxonomy_term(cleaned):
             continue
         if len(cleaned) < 4 and cleaned not in SHORT_TAXONOMY_ALLOWLIST:
             continue
@@ -524,6 +562,7 @@ def warnings_for(
     status_flags: list[str],
     attachment_count: int,
     has_linked_procedure: bool = False,
+    is_procedural: bool = True,
 ) -> list[str]:
     warnings: list[str] = []
     if "deprecated" in status_flags or "archived" in status_flags:
@@ -532,9 +571,9 @@ def warnings_for(
         warnings.append("low_quality_score")
     if not signals.has_owner:
         warnings.append("missing_explicit_owner")
-    if document_type == "runbook" and not signals.has_validation_steps:
+    if document_type == "runbook" and is_procedural and not signals.has_validation_steps:
         warnings.append("missing_validation_steps")
-    if document_type == "runbook" and not signals.has_backout_steps:
+    if document_type == "runbook" and is_procedural and not signals.has_backout_steps:
         if has_linked_procedure:
             warnings.append("linked_procedure_not_expanded")
         else:
@@ -566,11 +605,99 @@ def has_linked_procedure(bundle: PageBundle) -> bool:
     return any(link.href for link in bundle.links.links)
 
 
+def is_procedural_runbook(bundle: PageBundle) -> bool:
+    text = (
+        f"{bundle.metadata.title}\n{' '.join(bundle.ancestor_titles)}\n{bundle.text[:2000]}".lower()
+    )
+    indicators = (
+        "runbook",
+        "installation guide",
+        "troubleshooting",
+        "troubleshoot",
+        "rollback",
+        "failover",
+        "procedure",
+        "operational document",
+        "scenario",
+        "how to",
+        "deployment tools",
+        "pipeline",
+        "health check",
+        "synthetic monitoring",
+    )
+    non_procedural = (
+        "business document",
+        "business overview",
+        "technical document",
+        "release report",
+        "quiet running report",
+        "performance test",
+        "load testing result",
+        "database information",
+    )
+    return any(term in text for term in indicators) and not any(
+        term in text for term in non_procedural
+    )
+
+
+def infer_document_subtype(bundle: PageBundle, document_type: str) -> str | None:
+    text = f"{bundle.metadata.title}\n{' '.join(bundle.ancestor_titles)}".lower()
+    subtype_rules = [
+        ("database_information", ("database information",)),
+        ("rollback_procedure", ("rollback procedure", "rollback procedures")),
+        ("failover_procedure", ("failover",)),
+        ("disaster_recovery", ("disaster recovery", " dr ", "test standard and dr")),
+        ("installation_guide", ("installation guide",)),
+        ("troubleshooting_guide", ("troubleshooting", "troubleshoot")),
+        ("release_report", ("release report", "release notes")),
+        ("performance_test_report", ("performance test", "load testing result", "test results")),
+        ("api_specification", ("api specification", "open api specification")),
+        ("technical_document", ("technical document",)),
+        ("technical_design", ("technical design", "solution design")),
+        ("business_overview", ("business overview", "business document")),
+        ("support_model", ("support model", "support escalation")),
+        ("onboarding_guide", ("onboarding", "on-boarding")),
+        ("faq", ("faq", "faqs")),
+        ("monitoring_dashboard", ("dashboard", "datadog", "alarms", "monitoring")),
+        ("change_checklist", ("change management checklist", "production readiness checklist")),
+    ]
+    for subtype, terms in subtype_rules:
+        if any(term in text for term in terms):
+            return subtype
+    return document_type if document_type in {"support_model", "rca", "incident"} else None
+
+
+def document_type_for_subtype(document_type: str, document_subtype: str | None) -> str:
+    if not document_subtype:
+        return document_type
+    strong_subtype_type_map = {
+        "performance_test_report": "reference",
+        "release_report": "change_record",
+    }
+    if document_subtype in strong_subtype_type_map:
+        return strong_subtype_type_map[document_subtype]
+    if document_type != "unknown":
+        return document_type
+    subtype_type_map = {
+        "api_specification": "reference",
+        "business_overview": "reference",
+        "database_information": "reference",
+        "faq": "knowledge_article",
+        "performance_test_report": "reference",
+        "release_report": "change_record",
+        "technical_document": "reference",
+        "technical_design": "design",
+    }
+    return subtype_type_map.get(document_subtype, document_type)
+
+
 def enrich_page(
     bundle: PageBundle, *, run_id: str, dataset_name: str, config: AppConfig, generated_at: str
 ) -> Enrichment:
     headings = extract_headings(bundle.clean_markdown)
     document_type, document_type_confidence = classify_document(bundle)
+    document_subtype = infer_document_subtype(bundle, document_type)
+    document_type = document_type_for_subtype(document_type, document_subtype)
     flags = status_flags(bundle, document_type, bundle.metadata.updated_at)
     keywords = extract_keywords(bundle, headings)
     signals = detect_operational_signals(bundle)
@@ -605,6 +732,7 @@ def enrich_page(
         status_flags=flags,
         attachment_count=len(bundle.attachment_names),
         has_linked_procedure=has_linked_procedure(bundle),
+        is_procedural=is_procedural_runbook(bundle),
     )
     onyx = OnyxMetadata(
         link=bundle.metadata.url or "",
@@ -618,6 +746,7 @@ def enrich_page(
         approval_status="unreviewed",
         historical=historical,
         currentness=current,
+        document_subtype=document_subtype,
     )
     return Enrichment(
         run_id=run_id,
@@ -632,6 +761,7 @@ def enrich_page(
         ONYX_METADATA=onyx,
         document_type=document_type,
         document_type_confidence=document_type_confidence,
+        document_subtype=document_subtype,
         short_summary=short_summary,
         detailed_summary=detailed_summary,
         keywords=keywords,

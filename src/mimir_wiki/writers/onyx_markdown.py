@@ -45,11 +45,20 @@ GENERIC_ENTITY_NAMES = {
     "performance",
     "technical",
     "technical document",
+    "wip internal",
 }
 GENERIC_KEY_FACT_TERMS = GENERIC_ENTITY_NAMES | {
+    "account",
     "configuration",
+    "failed",
+    "guide",
     "here",
     "information",
+    "installation",
+    "linking",
+    "previous",
+    "service",
+    "verify",
 }
 
 
@@ -74,12 +83,13 @@ def render_markdown(
     first_line = f"#ONYX_METADATA={json_dumps(metadata)}"
     title = display_title(bundle.metadata.title)
     truncation_warnings: list[str] = []
-    source = strip_front_matter(bundle.clean_markdown)
+    source = rewrite_source_images(strip_front_matter(bundle.clean_markdown))
     if len(source) > config.onyx_poc.max_source_content_chars:
         source = source[: config.onyx_poc.max_source_content_chars]
         truncation_warnings.append("source_content_truncated_for_onyx")
     key_fact_lines = render_key_facts(bundle, enrichment)
-    source_link_lines = render_source_links(bundle)
+    source_link_lines = render_source_links(bundle, limit=8, include_low_value=False)
+    additional_source_link_lines = render_additional_source_links(bundle, source_link_lines)
     keyword_lines = "\n".join(f"- {keyword}" for keyword in enrichment.keywords) or "- none"
     theme_lines = "\n".join(f"- {theme}" for theme in enrichment.themes) or "- none"
     concept_lines = "\n".join(f"- {concept}" for concept in enrichment.concepts) or "- none"
@@ -91,6 +101,11 @@ def render_markdown(
         or "- none"
     )
     warning_lines = "\n".join(f"- {warning}" for warning in enrichment.warnings) or "- none"
+    warning_heading = (
+        "Operational Gaps"
+        if enrichment.document_type in {"runbook", "support_model"}
+        else "Documentation Quality Notes"
+    )
     source_section = f"\n## Source Content\n\n{source}\n" if include_source_content else ""
     body = f"""
 
@@ -105,6 +120,7 @@ def render_markdown(
 {enrichment.detailed_summary}
 
 Document type: `{enrichment.document_type}` ({enrichment.document_type_confidence:.2f})
+{document_subtype_line(enrichment)}
 Quality band: `{enrichment.quality_band}` ({enrichment.quality.overall_score}/100)
 Currentness: `{enrichment.currentness}`
 
@@ -117,6 +133,8 @@ Currentness: `{enrichment.currentness}`
 {source_link_lines}
 
 {source_section}
+
+{additional_source_link_lines}
 
 ## Enrichment Details
 
@@ -144,7 +162,7 @@ Currentness: `{enrichment.currentness}`
 - Operational value: {enrichment.quality.operational_value_score}
 - Ownership clarity: {enrichment.quality.ownership_clarity_score}
 
-Warnings:
+{warning_heading}:
 
 {warning_lines}
 
@@ -188,14 +206,23 @@ def display_candidate_entities(entities: list[CandidateEntity]) -> list[Candidat
     return selected
 
 
+def document_subtype_line(enrichment: Enrichment) -> str:
+    if not enrichment.document_subtype:
+        return "Document subtype: `not classified`"
+    return f"Document subtype: `{enrichment.document_subtype}`"
+
+
 def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
     facts: list[str] = []
+    facts.extend(render_llm_key_facts(enrichment))
     title = display_title(bundle.metadata.title)
     facts.append(f"- Page title: {title}")
     if title != bundle.metadata.title:
         facts.append(f"- Original source title: {bundle.metadata.title}")
     facts.append(f"- Source space: {bundle.metadata.space_key}")
     facts.append(f"- Document type: {enrichment.document_type}")
+    if enrichment.document_subtype:
+        facts.append(f"- Document subtype: {enrichment.document_subtype}")
     facts.append(f"- Currentness: {enrichment.currentness}")
     if bundle.metadata.updated_at:
         facts.append(f"- Source updated at: {bundle.metadata.updated_at}")
@@ -207,7 +234,7 @@ def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
         ("Support groups", enrichment.entities.get("support_groups", [])),
         ("Teams", enrichment.entities.get("teams", [])),
     ):
-        cleaned = [value for value in values if value.lower() not in GENERIC_ENTITY_NAMES]
+        cleaned = filter_key_fact_values(label, values)
         if cleaned:
             facts.append(f"- {label}: {', '.join(cleaned)}")
     for label, entity_types in (
@@ -241,6 +268,89 @@ def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
     return "\n".join(facts) if facts else "- none"
 
 
+def render_llm_key_facts(enrichment: Enrichment) -> list[str]:
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for fact in enrichment.key_facts[:12]:
+        label = fact.label.strip()
+        value = fact.value.strip()
+        if not label or not value:
+            continue
+        if is_question_like(value) or is_noisy_key_fact_value(value):
+            continue
+        key = (label.lower(), value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"- {label}: {value}")
+    return lines
+
+
+def filter_key_fact_values(label: str, values: list[str]) -> list[str]:
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.lower().strip()
+        if not normalized or normalized in seen:
+            continue
+        if (
+            normalized in GENERIC_ENTITY_NAMES
+            or is_question_like(value)
+            or is_noisy_key_fact_value(value)
+        ):
+            continue
+        if label in {"Support groups", "Teams"} and not is_stable_support_value(value):
+            continue
+        seen.add(normalized)
+        filtered.append(value)
+    return filtered[:10]
+
+
+def is_question_like(value: str) -> bool:
+    normalized = value.strip().lower()
+    return "?" in value or normalized.startswith(
+        (
+            "what ",
+            "who ",
+            "why ",
+            "how ",
+            "when ",
+            "where ",
+            "do ",
+            "does ",
+            "can ",
+            "could ",
+            "please clarify",
+        )
+    )
+
+
+def is_noisy_key_fact_value(value: str) -> bool:
+    normalized = value.strip().lower()
+    if len(value) > 100:
+        return True
+    return normalized in GENERIC_KEY_FACT_TERMS
+
+
+def is_stable_support_value(value: str) -> bool:
+    normalized = value.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "sre",
+            "support",
+            "l1",
+            "l2",
+            "l3",
+            "team",
+            "assignment",
+            "resolver",
+            "techops",
+            "app-",
+        )
+    )
+
+
 def high_confidence_entities_by_type(enrichment: Enrichment, entity_types: set[str]) -> list[str]:
     values: list[str] = []
     seen: set[str] = set()
@@ -258,21 +368,79 @@ def high_confidence_entities_by_type(enrichment: Enrichment, entity_types: set[s
     return values
 
 
-def render_source_links(bundle: PageBundle) -> str:
+def render_source_links(bundle: PageBundle, *, limit: int, include_low_value: bool) -> str:
     if not bundle.links.links:
         return "- none"
     lines: list[str] = []
     seen: set[str] = set()
-    for index, link in enumerate(bundle.links.links[:25], start=1):
+    ranked_links = sorted(bundle.links.links, key=source_link_rank)
+    for index, link in enumerate(ranked_links, start=1):
         href = link.href or ""
         if not href or href in seen:
+            continue
+        if not include_low_value and is_low_value_source_link(link.text or "", href):
             continue
         seen.add(href)
         label = (link.text or link.target_title or f"Source link {index}").strip()
         if label.lower() in {"here", "link", "click here"}:
             label = f"Referenced source link {index}"
         lines.append(f"- {label}: {href}")
+        if len(lines) >= limit:
+            break
     return "\n".join(lines) if lines else "- none"
+
+
+def render_additional_source_links(bundle: PageBundle, early_lines: str) -> str:
+    all_links = render_source_links(bundle, limit=100, include_low_value=True)
+    if all_links == "- none" or all_links == early_lines:
+        return ""
+    return f"\n## Additional Source Links\n\n{all_links}\n"
+
+
+def source_link_rank(link: object) -> tuple[int, str]:
+    href = getattr(link, "href", "") or ""
+    text = getattr(link, "text", "") or ""
+    lower = f"{text} {href}".lower()
+    if is_low_value_source_link(text, href):
+        return (5, lower)
+    if any(
+        marker in lower
+        for marker in ("runbook", "procedure", "rollback", "failover", "troubleshoot")
+    ):
+        return (0, lower)
+    if any(marker in lower for marker in ("jira", "browse/", "service-now", "change_request")):
+        return (1, lower)
+    if "confluence" in lower:
+        return (2, lower)
+    return (3, lower)
+
+
+def is_low_value_source_link(text: str, href: str) -> bool:
+    lower = f"{text} {href}".lower()
+    if href.startswith("mailto:"):
+        return True
+    return any(
+        marker in lower
+        for marker in (
+            "/display/~",
+            "diffpagesbyversion",
+            "templateid=",
+            "newspacekey=",
+            "personal/",
+            "stream.aspx",
+        )
+    )
+
+
+def rewrite_source_images(markdown: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        alt = match.group(1).strip()
+        url = match.group(2).strip()
+        filename = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "image"
+        label = alt or filename
+        return f"> Image omitted from source export: {label}"
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace, markdown)
 
 
 def apply_redaction(content: str, config: AppConfig) -> tuple[str, list[str]]:

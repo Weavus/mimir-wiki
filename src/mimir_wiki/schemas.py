@@ -128,6 +128,7 @@ class OnyxMetadata(BaseModel):
     source_system: str | None = None
     space_key: str | None = None
     document_type: str | None = None
+    document_subtype: str | None = None
     quality_band: str | None = None
     approval_status: str = "unreviewed"
     historical: bool | None = None
@@ -202,6 +203,14 @@ class CandidateEntity(BaseModel):
     method: str = "deterministic"
 
 
+class KeyFact(BaseModel):
+    label: str
+    value: str
+    confidence: float = Field(ge=0, le=1, default=0.7)
+    evidence: str | None = None
+    method: str = "llm"
+
+
 class EnrichmentSignature(BaseModel):
     source_content_hash: str
     schema_version: str = SCHEMA_VERSION
@@ -228,8 +237,10 @@ class Enrichment(FlexibleModel):
     ONYX_METADATA: OnyxMetadata
     document_type: str
     document_type_confidence: float = Field(ge=0, le=1)
+    document_subtype: str | None = None
     short_summary: str
     detailed_summary: str
+    key_facts: list[KeyFact] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
     themes: list[str] = Field(default_factory=list)

@@ -16,9 +16,12 @@ from mimir_wiki.config import AppConfig
 from mimir_wiki.constants import DOCUMENT_TYPES
 from mimir_wiki.enrichers.deterministic import (
     categories_for,
+    document_type_for_subtype,
     entity_bucket,
     filter_taxonomy_terms,
     has_linked_procedure,
+    infer_document_subtype,
+    is_procedural_runbook,
     warnings_for,
 )
 from mimir_wiki.llm.base import (
@@ -32,6 +35,7 @@ from mimir_wiki.schemas import (
     CandidateEntity,
     CandidateMention,
     Enrichment,
+    KeyFact,
     LLMUsage,
     OperationalSignals,
     PageFailure,
@@ -46,6 +50,7 @@ DETERMINISTIC_WARNING_TYPES = {
     "missing_explicit_owner",
     "missing_validation_steps",
     "missing_backout_steps",
+    "linked_procedure_not_expanded",
     "attachments_present_not_parsed",
 }
 
@@ -134,6 +139,13 @@ class QualityWarningsResponse(LLMTaskModel):
     warnings: list[str] = Field(default_factory=list, max_length=100)
 
 
+class LLMKeyFact(LLMTaskModel):
+    label: str = Field(min_length=1, max_length=80)
+    value: str = Field(min_length=1, max_length=300)
+    confidence: float = Field(ge=0, le=1, default=0.75)
+    evidence: str | None = Field(default=None, max_length=500)
+
+
 class BundleResponse(LLMTaskModel):
     document_type: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -145,6 +157,7 @@ class BundleResponse(LLMTaskModel):
     candidate_entities: list[LLMCandidateEntity] | None = Field(default=None, max_length=100)
     operational_signals: OperationalSignals | None = None
     warnings: list[str] | None = Field(default=None, max_length=100)
+    key_facts: list[LLMKeyFact] | None = Field(default=None, max_length=30)
 
     @field_validator("document_type")
     @classmethod
@@ -190,6 +203,10 @@ PROMPT_CONTRACTS = {
     ),
     "operational_signals": '{"operational_signals":{"has_owner":true}}',
     "quality_warnings": '{"warnings":["missing explicit owner"]}',
+    "key_facts": (
+        '{"key_facts":[{"label":"Primary service","value":"ForgeRock",'
+        '"confidence":0.8,"evidence":"..."}]}'
+    ),
 }
 
 
@@ -426,6 +443,7 @@ async def _apply_llm_enrichment_async(
                 if config.llm.fail_fast or config.processing.fail_fast:
                     return result
         if task_payloads:
+            merge_task_payload(result.enrichment, "key_facts", task_payloads, bundle)
             for task in work_item.tasks:
                 merge_task_payload(result.enrichment, task, task_payloads, bundle)
     finalize_llm_enrichment(result.enrichment, bundle, config)
@@ -434,6 +452,17 @@ async def _apply_llm_enrichment_async(
 
 
 def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: AppConfig) -> None:
+    enrichment.document_subtype = infer_document_subtype(bundle, enrichment.document_type)
+    enrichment.document_type = document_type_for_subtype(
+        enrichment.document_type, enrichment.document_subtype
+    )
+    historical, current = currentness(
+        enrichment.document_type, enrichment.status_flags, bundle.metadata.updated_at
+    )
+    enrichment.historical = historical
+    enrichment.currentness = current
+    enrichment.ONYX_METADATA.document_type = enrichment.document_type
+    enrichment.ONYX_METADATA.document_subtype = enrichment.document_subtype
     enrichment.quality = build_quality(
         document_type=enrichment.document_type,
         updated_at=bundle.metadata.updated_at,
@@ -445,12 +474,6 @@ def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: 
         config=config.scoring,
     )
     enrichment.quality_band = quality_band(enrichment.quality.overall_score)
-    historical, current = currentness(
-        enrichment.document_type, enrichment.status_flags, bundle.metadata.updated_at
-    )
-    enrichment.historical = historical
-    enrichment.currentness = current
-    enrichment.ONYX_METADATA.document_type = enrichment.document_type
     enrichment.ONYX_METADATA.quality_band = enrichment.quality_band
     enrichment.ONYX_METADATA.historical = historical
     enrichment.ONYX_METADATA.currentness = current
@@ -469,6 +492,7 @@ def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: 
         status_flags=enrichment.status_flags,
         attachment_count=len(bundle.attachment_names),
         has_linked_procedure=has_linked_procedure(bundle),
+        is_procedural=is_procedural_runbook(bundle),
     )
     enrichment.warnings = _merge_strings(custom_warnings, recalculated, 60)
     enrichment.confidence = min(
@@ -538,6 +562,7 @@ def prompt_contract_for_tasks(tasks: list[str]) -> str:
         contract = PROMPT_CONTRACTS.get(task)
         if contract:
             parts.append(contract.strip("{}"))
+    parts.append(PROMPT_CONTRACTS["key_facts"].strip("{}"))
     return "{" + ",".join(part for part in parts if part) + "}"
 
 
@@ -646,6 +671,7 @@ def _task_payload_keys(task: str) -> tuple[str, ...]:
         "candidate_entities": ("candidate_entities",),
         "operational_signals": ("operational_signals",),
         "quality_warnings": ("warnings",),
+        "key_facts": ("key_facts",),
     }.get(task, tuple())
 
 
@@ -769,6 +795,36 @@ def merge_task_payload(
                 )
                 seen.add(key)
         enrichment.candidate_entities = entities[:80]
+        return
+    if task == "key_facts":
+        facts = list(enrichment.key_facts)
+        seen = {(fact.label.lower(), fact.value.lower()) for fact in facts}
+        for payload in payloads:
+            raw_facts = payload.get("key_facts")
+            if not isinstance(raw_facts, list):
+                continue
+            for raw in raw_facts:
+                if not isinstance(raw, dict):
+                    continue
+                label = str(raw.get("label") or "").strip()[:80]
+                value = str(raw.get("value") or "").strip()[:300]
+                if not label or not value:
+                    continue
+                key = (label.lower(), value.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                confidence = raw.get("confidence", 0.75)
+                facts.append(
+                    KeyFact(
+                        label=label,
+                        value=value,
+                        confidence=max(0, min(1, float(confidence))),
+                        evidence=str(raw.get("evidence"))[:500] if raw.get("evidence") else None,
+                        method="llm",
+                    )
+                )
+        enrichment.key_facts = facts[:40]
 
 
 def _collect_strings(payloads: list[dict[str, Any]], key: str) -> list[str]:
