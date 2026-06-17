@@ -61,9 +61,40 @@ class ClassificationResponse(LLMTaskModel):
     @field_validator("document_type")
     @classmethod
     def document_type_supported(cls, value: str) -> str:
+        value = normalize_document_type(value)
         if value not in DOCUMENT_TYPES:
             raise ValueError(f"unsupported document_type: {value}")
         return value
+
+
+DOCUMENT_TYPE_ALIASES = {
+    "faq": "knowledge_article",
+    "frequently asked questions": "knowledge_article",
+    "how to": "knowledge_article",
+    "how-to": "knowledge_article",
+    "performance test": "reference",
+    "performance_test": "reference",
+    "report": "reference",
+    "release note": "change_record",
+    "release notes": "change_record",
+    "release-notes": "change_record",
+    "release_note": "change_record",
+    "release_notes": "change_record",
+    "test report": "reference",
+    "test_report": "reference",
+}
+
+
+def normalize_document_type(value: str) -> str:
+    normalized = normalize_term(value).replace(" ", "_")
+    alias_key = normalize_term(value)
+    if value in DOCUMENT_TYPE_ALIASES:
+        return DOCUMENT_TYPE_ALIASES[value]
+    if normalized in DOCUMENT_TYPE_ALIASES:
+        return DOCUMENT_TYPE_ALIASES[normalized]
+    if alias_key in DOCUMENT_TYPE_ALIASES:
+        return DOCUMENT_TYPE_ALIASES[alias_key]
+    return normalized
 
 
 class SummaryResponse(LLMTaskModel):
@@ -118,6 +149,8 @@ class BundleResponse(LLMTaskModel):
     @field_validator("document_type")
     @classmethod
     def optional_document_type_supported(cls, value: str | None) -> str | None:
+        if value is not None:
+            value = normalize_document_type(value)
         if value is not None and value not in DOCUMENT_TYPES:
             raise ValueError(f"unsupported document_type: {value}")
         return value

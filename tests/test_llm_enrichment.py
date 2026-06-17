@@ -228,3 +228,24 @@ def test_task_payload_schema_rejects_invalid_classification() -> None:
         assert "document_type" in str(exc) or "confidence" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected validation failure")
+
+
+def test_classification_schema_normalizes_common_aliases() -> None:
+    assert (
+        validate_task_payload("classification", {"document_type": "faq", "confidence": 0.8})[
+            "document_type"
+        ]
+        == "knowledge_article"
+    )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "release_notes", "confidence": 0.8}
+        )["document_type"]
+        == "change_record"
+    )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "test report", "confidence": 0.8}
+        )["document_type"]
+        == "reference"
+    )
