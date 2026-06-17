@@ -1,0 +1,55 @@
+[project]
+name = "mimir-wiki"
+version = "0.1.0"
+description = "Validate, enrich, inventory, and export mimir-confluence caches."
+readme = "mimir_wiki_spec.md"
+requires-python = ">=3.13"
+dependencies = [
+  "httpx>=0.28.1",
+  "orjson>=3.10.18",
+  "pydantic>=2.11.0",
+  "python-dotenv>=1.1.0",
+  "pyyaml>=6.0.2",
+  "rich>=14.0.0",
+  "typer>=0.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.16.0",
+  "pytest>=8.4.0",
+  "ruff>=0.11.13",
+  "types-PyYAML>=6.0.12.20250516",
+]
+
+[project.scripts]
+mimir-wiki = "mimir_wiki.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["B008"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.13"
+packages = ["mimir_wiki"]
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "smoke: local smoke tests against real sample caches",
+]

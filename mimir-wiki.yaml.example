@@ -1,0 +1,294 @@
+# Example mimir-wiki configuration.
+#
+# Copy this file to mimir-wiki.yaml and adjust paths/provider settings for your
+# environment. Do not put API keys or tokens in this file; use .env or exported
+# environment variables instead.
+
+project_name: mimir-wiki
+
+paths:
+  # Usually overridden per run with --cache.
+  cache: ./cache/customer-identity-and-access-management-entra
+  knowledge: ./knowledge
+  vault: ./vault
+  dist: ./dist/onyx-approved
+  dist_onyx_enriched: ./dist/onyx-enriched
+  reports: ./reports
+  runs: ./runs
+  llm_cache: ./.mimir-wiki/llm-cache
+
+features:
+  deterministic:
+    document_classification: true
+    keywords: true
+    headings: true
+    links: true
+    quality_scoring: true
+    candidate_entities: true
+  llm:
+    # Default is deterministic only. Use --enable-llm plus a non-none provider,
+    # or select the azure-openai profile below, when provider details are ready.
+    enabled: false
+    tasks:
+      classification: false
+      summary: true
+      keywords: false
+      themes: true
+      concepts: true
+      candidate_entities: true
+      operational_signals: true
+      quality_warnings: true
+  outputs:
+    enrichment_json: true
+    document_index: true
+    quality_scores: true
+    themes: true
+    concepts: true
+    candidate_entities: true
+    onyx_poc_markdown: true
+    reports: true
+
+llm:
+  # none | openai | azure-openai | azure-ai-foundry | openai-compatible
+  provider: none
+  model: none
+  prompt_version: enrichment-v1
+  task_models:
+    classification:
+      provider: azure-openai
+      model: gpt-4.1-mini
+      prompt_version: classification-v1
+    summary:
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: summary-v1
+    keywords:
+      provider: azure-openai
+      model: gpt-4.1-mini
+      prompt_version: keywords-v1
+    themes:
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: themes-v1
+    concepts:
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: concepts-v1
+    candidate_entities:
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: candidate-entities-v1
+    operational_signals:
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: operational-signals-v1
+    quality_warnings:
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: quality-warnings-v1
+  temperature: 0
+  max_concurrency: 4
+  requests_per_minute:
+  tokens_per_minute:
+  max_retries: 3
+  initial_backoff_seconds: 1
+  max_backoff_seconds: 60
+  backoff_jitter: true
+  respect_retry_after: true
+  timeout_seconds: 60
+  fail_fast: false
+  retryable_status_codes:
+    - 408
+    - 409
+    - 429
+    - 500
+    - 502
+    - 503
+    - 504
+  cache_by:
+    - source_content_hash
+    - prompt_version
+    - provider
+    - model
+    - task
+  openai:
+    api_key_env: OPENAI_API_KEY
+  azure_openai:
+    endpoint_env: AZURE_OPENAI_ENDPOINT
+    api_key_env: AZURE_OPENAI_API_KEY
+    deployment_env: AZURE_OPENAI_DEPLOYMENT
+    api_version_env: AZURE_OPENAI_API_VERSION
+  azure_ai_foundry:
+    endpoint_env: AZURE_AI_FOUNDRY_ENDPOINT
+    api_key_env: AZURE_AI_FOUNDRY_API_KEY
+    deployment_env: AZURE_AI_FOUNDRY_DEPLOYMENT
+  openai_compatible:
+    base_url_env: OPENAI_COMPATIBLE_BASE_URL
+    api_key_env: OPENAI_COMPATIBLE_API_KEY
+    model_env: OPENAI_COMPATIBLE_MODEL
+  # Optional. Replace {} with your contracted rates if you want cost reports.
+  # Example:
+  # costs_usd_per_1k_tokens:
+  #   azure-openai:gpt-4.1:
+  #     input: 0.00
+  #     output: 0.00
+  #   gpt-4.1-mini:
+  #     input: 0.00
+  #     output: 0.00
+  costs_usd_per_1k_tokens: {}
+  chunking:
+    enabled: true
+    max_input_tokens_per_chunk: 8000
+    overlap_tokens: 200
+    max_chunks_per_document: 20
+
+processing:
+  page_workers: 8
+  llm_workers: 4
+  writer_workers: 1
+  use_threads_for_blocking_io: false
+  fail_fast: false
+
+cli:
+  color: auto
+  progress: auto
+  default_output: human
+  summary: true
+  log_level: info
+  show_tracebacks: false
+  quiet: false
+
+scoring:
+  freshness_days:
+    excellent: 90
+    good: 180
+    acceptable: 365
+    stale: 730
+  weights:
+    freshness: 0.20
+    authority: 0.20
+    completeness: 0.20
+    operational_value: 0.25
+    ownership_clarity: 0.10
+    contradiction_penalty: 0.05
+  rca:
+    treat_old_documents_as_historical: true
+    required_signals:
+      - has_impact_summary
+      - has_root_cause
+      - has_corrective_actions
+    preferred_signals:
+      - has_incident_timeline
+      - has_contributing_factors
+      - has_action_owners
+      - has_detection_gap
+      - has_monitoring_gap
+      - has_runbook_gap
+  document_type_weights:
+    approved_runbook: 95
+    runbook: 90
+    knowledge_article: 85
+    rca: 85
+    architecture: 85
+    known_error: 80
+    support_model: 80
+    incident: 75
+    change_record: 70
+    design: 75
+    migration: 65
+    onboarding: 65
+    reference: 50
+    project_plan: 40
+    meeting_notes: 30
+    archive: 20
+    unknown: 10
+  claim_type_authority:
+    current_recovery_procedure:
+      preferred:
+        - approved_runbook
+        - runbook
+        - knowledge_article
+      supporting:
+        - known_error
+        - rca
+        - incident
+    historical_impact_timeline:
+      preferred:
+        - incident
+        - rca
+    root_cause:
+      preferred:
+        - rca
+        - known_error
+      supporting:
+        - incident
+        - runbook
+
+onyx_poc:
+  emit_enriched_markdown: true
+  include_source_content: true
+  max_source_content_chars: 200000
+  slug_max_chars: 90
+  chunked_output: false
+  metadata_field: ONYX_METADATA
+  metadata_line_format: hash_prefix
+  metadata_policy: lean_filters
+
+redaction:
+  enabled: true
+  action: redact
+  fail_on_high_confidence_secret: true
+  replacement: "[REDACTED]"
+  patterns:
+    - aws_access_key
+    - github_token
+    - slack_token
+    - openai_key
+    - azure_openai_key_assignment
+    - generic_api_key_assignment
+    - bearer_token
+    - connection_string
+    - private_key_block
+    - jwt
+    - password_assignment
+
+artifacts:
+  schema_version: mimir-wiki/v1
+  atomic_writes: true
+  stable_sort_order:
+    - space_key
+    - page_id
+
+profiles:
+  deterministic:
+    llm:
+      provider: none
+      model: none
+    features:
+      llm:
+        enabled: false
+
+  azure-openai:
+    llm:
+      provider: azure-openai
+      model: gpt-4.1
+    features:
+      llm:
+        enabled: true
+
+  ci:
+    paths:
+      knowledge: ./tmp/knowledge
+      dist_onyx_enriched: ./tmp/dist/onyx-enriched
+      reports: ./tmp/reports
+      runs: ./tmp/runs
+    cli:
+      color: never
+      progress: never
+      default_output: json
+    llm:
+      provider: none
+      model: none
+    features:
+      llm:
+        enabled: false
