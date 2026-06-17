@@ -73,6 +73,31 @@ GENERIC_ENTITY_TERMS = {
     "use",
 }
 
+GENERIC_TAXONOMY_TERMS = GENERIC_ENTITY_TERMS | {
+    "admin",
+    "api",
+    "ciame",
+    "confluence",
+    "customer identity and access management",
+    "customer identity and access management entra",
+    "document",
+    "documents",
+    "here",
+    "iam",
+    "load",
+    "open",
+    "pre",
+    "reference",
+    "region",
+    "runbook",
+    "scim",
+    "summary",
+    "technical",
+    "test",
+    "user",
+}
+SHORT_TAXONOMY_ALLOWLIST = {"dev", "qa", "ppe", "prod", "k6", "uat", "dr"}
+
 DOCUMENT_TYPE_RULES: list[tuple[str, list[str]]] = [
     ("archive", ["archive", "archived", "obsolete", "deprecated", "retired"]),
     ("rca", ["rca", "root cause", "postmortem", "post-mortem", "incident review"]),
@@ -206,7 +231,31 @@ def extract_keywords(bundle: PageBundle, headings: list[str], max_terms: int = 1
         normalized = normalize_term(phrase)
         if normalized and normalized not in STOPWORDS:
             terms[normalized] += 2
-    return [term for term, _ in terms.most_common(max_terms)]
+    return filter_taxonomy_terms([term for term, _ in terms.most_common(max_terms * 2)])[:max_terms]
+
+
+def clean_taxonomy_term(value: str) -> str:
+    normalized = normalize_term(value)
+    normalized = re.sub(r"^(?:\d+\s+){2,}", "", normalized).strip()
+    return normalized
+
+
+def filter_taxonomy_terms(values: list[str], *, max_terms: int | None = None) -> list[str]:
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = clean_taxonomy_term(value)
+        if not cleaned or cleaned in seen:
+            continue
+        if cleaned in GENERIC_TAXONOMY_TERMS:
+            continue
+        if len(cleaned) < 4 and cleaned not in SHORT_TAXONOMY_ALLOWLIST:
+            continue
+        seen.add(cleaned)
+        filtered.append(cleaned)
+        if max_terms is not None and len(filtered) >= max_terms:
+            break
+    return filtered
 
 
 def detect_operational_signals(bundle: PageBundle) -> OperationalSignals:
@@ -429,13 +478,13 @@ def themes_for(bundle: PageBundle, document_type: str, keywords: list[str]) -> l
     values = [document_type]
     values.extend(normalize_term(title) for title in bundle.ancestor_titles[-2:])
     values.extend(keywords[:4])
-    return [value for value in dict.fromkeys(values) if value]
+    return filter_taxonomy_terms([value for value in dict.fromkeys(values) if value])
 
 
 def concepts_for(headings: list[str], keywords: list[str]) -> list[str]:
     values = [normalize_term(heading) for heading in headings[:8]]
     values.extend(keywords[:6])
-    return [value for value in dict.fromkeys(values) if value]
+    return filter_taxonomy_terms([value for value in dict.fromkeys(values) if value])
 
 
 def entity_bucket(candidate_entities: list[CandidateEntity]) -> dict[str, list[str]]:

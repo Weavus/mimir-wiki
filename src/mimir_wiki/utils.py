@@ -183,7 +183,20 @@ def redact_secrets(data: Any) -> Any:
         redacted: dict[str, Any] = {}
         for key, value in data.items():
             lowered = str(key).lower()
-            if any(marker in lowered for marker in ("key", "token", "secret", "password")):
+            secret_like = (
+                lowered in {"api_key", "apikey", "key", "secret", "password", "token"}
+                or lowered.endswith("_api_key")
+                or lowered.endswith("_api_key_env")
+                or lowered.endswith("_key")
+                or lowered.endswith("_key_env")
+                or lowered.endswith("_secret")
+                or lowered.endswith("_secret_env")
+                or lowered.endswith("_password")
+                or lowered.endswith("_password_env")
+                or lowered.endswith("_token")
+                or lowered.endswith("_token_env")
+            )
+            if secret_like:
                 redacted[key] = "[REDACTED]" if value else value
             else:
                 redacted[key] = redact_secrets(value)

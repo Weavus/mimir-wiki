@@ -17,6 +17,7 @@ from mimir_wiki.constants import DOCUMENT_TYPES
 from mimir_wiki.enrichers.deterministic import (
     categories_for,
     entity_bucket,
+    filter_taxonomy_terms,
     has_linked_procedure,
     warnings_for,
 )
@@ -421,11 +422,10 @@ def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: 
     enrichment.ONYX_METADATA.historical = historical
     enrichment.ONYX_METADATA.currentness = current
     enrichment.entities = entity_bucket(enrichment.candidate_entities)
+    enrichment.keywords = filter_taxonomy_terms(enrichment.keywords, max_terms=30)
+    enrichment.themes = filter_taxonomy_terms(enrichment.themes, max_terms=30)
+    enrichment.concepts = filter_taxonomy_terms(enrichment.concepts, max_terms=40)
     enrichment.categories = categories_for(bundle, enrichment.document_type, enrichment.keywords)
-    if enrichment.document_type != "unknown":
-        enrichment.themes = [
-            theme for theme in enrichment.themes if normalize_term(theme) != "unknown"
-        ]
     custom_warnings = [
         warning for warning in enrichment.warnings if warning not in DETERMINISTIC_WARNING_TYPES
     ]
