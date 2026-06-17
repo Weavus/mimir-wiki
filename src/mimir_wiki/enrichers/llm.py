@@ -74,6 +74,9 @@ class ClassificationResponse(LLMTaskModel):
 
 
 DOCUMENT_TYPE_ALIASES = {
+    "adr": "design",
+    "architecture decision record": "design",
+    "architecture_decision_record": "design",
     "faq": "knowledge_article",
     "frequently asked questions": "knowledge_article",
     "how to": "knowledge_article",
@@ -86,6 +89,12 @@ DOCUMENT_TYPE_ALIASES = {
     "release-notes": "change_record",
     "release_note": "change_record",
     "release_notes": "change_record",
+    "release": "change_record",
+    "requirements": "design",
+    "requirement document": "design",
+    "readme": "knowledge_article",
+    "runbook_index": "runbook",
+    "template": "reference",
     "test report": "reference",
     "test_report": "reference",
 }
@@ -144,7 +153,7 @@ class LLMKeyFact(LLMTaskModel):
     label: str = Field(min_length=1, max_length=80)
     value: str = Field(min_length=1, max_length=300)
     confidence: float = Field(ge=0, le=1, default=0.75)
-    evidence: str | None = Field(default=None, max_length=500)
+    evidence: str | None = Field(default=None, max_length=4000)
 
 
 class BundleResponse(LLMTaskModel):
@@ -158,7 +167,7 @@ class BundleResponse(LLMTaskModel):
     candidate_entities: list[LLMCandidateEntity] | None = Field(default=None, max_length=100)
     operational_signals: OperationalSignals | None = None
     warnings: list[str] | None = Field(default=None, max_length=100)
-    key_facts: list[LLMKeyFact] | None = Field(default=None, max_length=30)
+    key_facts: list[LLMKeyFact] | None = Field(default=None, max_length=120)
 
     @field_validator("document_type")
     @classmethod
@@ -373,37 +382,36 @@ async def _apply_llm_enrichment_async(
                     source_content_hash=bundle.source_content_hash,
                 )
                 result.retries += retries
-                payload = validate_work_item_payload(work_item, parse_json_response(response.text))
-                task_payloads.append(payload)
-                result.usage.append(
-                    LLMUsage(
-                        run_id=run_id,
-                        dataset_name=dataset_name,
-                        document_id=bundle.document_id,
-                        page_id=bundle.metadata.page_id,
-                        space_key=bundle.metadata.space_key,
-                        source_updated_at=bundle.metadata.updated_at,
-                        source_content_hash=bundle.source_content_hash,
-                        task=work_item.name,
+                usage = LLMUsage(
+                    run_id=run_id,
+                    dataset_name=dataset_name,
+                    document_id=bundle.document_id,
+                    page_id=bundle.metadata.page_id,
+                    space_key=bundle.metadata.space_key,
+                    source_updated_at=bundle.metadata.updated_at,
+                    source_content_hash=bundle.source_content_hash,
+                    task=work_item.name,
+                    provider=work_item.provider,
+                    model=response.model,
+                    prompt_version=work_item.prompt_version,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    cached=response.cached,
+                    attempts=attempts,
+                    retries=retries,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    estimated_cost_usd=estimate_llm_cost(
                         provider=work_item.provider,
                         model=response.model,
-                        prompt_version=work_item.prompt_version,
                         input_tokens=response.input_tokens,
                         output_tokens=response.output_tokens,
-                        cached=response.cached,
-                        attempts=attempts,
-                        retries=retries,
-                        elapsed_ms=round((time.monotonic() - started) * 1000),
-                        estimated_cost_usd=estimate_llm_cost(
-                            provider=work_item.provider,
-                            model=response.model,
-                            input_tokens=response.input_tokens,
-                            output_tokens=response.output_tokens,
-                            config=config,
-                        ),
-                        generated_at=generated_at,
-                    )
+                        config=config,
+                    ),
+                    generated_at=generated_at,
                 )
+                result.usage.append(usage)
+                payload = validate_work_item_payload(work_item, parse_json_response(response.text))
+                task_payloads.append(payload)
                 if progress_callback:
                     progress_callback(
                         {
@@ -427,8 +435,17 @@ async def _apply_llm_enrichment_async(
                     exc=exc,
                     attempts=getattr(exc, "attempts", 1),
                 )
-                result.failures.append(failure)
                 result.enrichment.llm_failures.append(failure.model_dump(mode="json"))
+                result.warnings.append(
+                    _warning(
+                        run_id,
+                        dataset_name,
+                        generated_at,
+                        bundle,
+                        f"llm_task_failed:{work_item.name}",
+                        f"{failure.error_type}: {failure.message}",
+                    )
+                )
                 if progress_callback:
                     progress_callback(
                         {
@@ -442,6 +459,7 @@ async def _apply_llm_enrichment_async(
                         }
                     )
                 if config.llm.fail_fast or config.processing.fail_fast:
+                    result.failures.append(failure)
                     return result
         if task_payloads:
             merge_task_payload(result.enrichment, "key_facts", task_payloads, bundle)

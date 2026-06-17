@@ -269,3 +269,22 @@ def test_classification_schema_normalizes_common_aliases() -> None:
         )["document_type"]
         == "reference"
     )
+    assert (
+        validate_task_payload(
+            "classification",
+            {"document_type": "architecture_decision_record", "confidence": 0.8},
+        )["document_type"]
+        == "design"
+    )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "runbook_index", "confidence": 0.8}
+        )["document_type"]
+        == "runbook"
+    )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "requirements", "confidence": 0.8}
+        )["document_type"]
+        == "design"
+    )
