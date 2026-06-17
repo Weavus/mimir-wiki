@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from pydantic import ValidationError
@@ -314,6 +315,7 @@ def _process_page(
     document_type_filter: str | None,
     onyx_root: Path,
     event_callback: Callable[[dict[str, Any]], None] | None,
+    llm_progress_callback: Callable[[dict[str, Any]], None] | None,
 ) -> PageProcessResult:
     result = PageProcessResult(page_id=bundle.metadata.page_id)
     enrichment_path = bundle.paths.root / "enrichment.json"
@@ -362,6 +364,7 @@ def _process_page(
                     generated_at=generated_at,
                     provider=provider,
                     event_callback=event_callback,
+                    progress_callback=llm_progress_callback,
                 )
                 enrichment = llm_result.enrichment
                 result.llm_usage.extend(llm_result.usage)
@@ -482,7 +485,7 @@ def enrich_command(
     force: bool = False,
     document_type_filter: str | None = None,
     space_filter: str | None = None,
-    progress_callback: Callable[[dict[str, int]], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> CommandResult:
     reader = CacheReader(cache_path)
@@ -512,6 +515,11 @@ def enrich_command(
     processed = 0
     skipped = 0
     considered = 0
+    llm_calls_planned = 0
+    llm_calls_completed = 0
+    llm_cached_calls_progress = 0
+    llm_current_task = "-"
+    llm_current_page = "-"
     output_paths: list[Path] = []
     knowledge_dir = Path(config.paths.knowledge)
     onyx_root = Path(config.paths.dist_onyx_enriched)
@@ -557,6 +565,8 @@ def enrich_command(
             context.write_run_artifacts(summary, event_callback)
             return CommandResult(summary=summary, warnings=context.warnings)
 
+    progress_lock = Lock()
+
     def emit_progress() -> None:
         if progress_callback:
             progress_callback(
@@ -567,10 +577,34 @@ def enrich_command(
                     "skipped": skipped,
                     "failed": len(context.failures),
                     "llm_retries": context.llm_retries,
+                    "llm_calls_planned": llm_calls_planned,
+                    "llm_calls_completed": llm_calls_completed,
+                    "llm_cached_calls": llm_cached_calls_progress,
+                    "llm_current_task": llm_current_task,
+                    "llm_current_page": llm_current_page,
                 }
             )
 
     emit_progress()
+
+    def llm_progress_callback(event: dict[str, Any]) -> None:
+        nonlocal llm_cached_calls_progress, llm_calls_completed, llm_calls_planned
+        nonlocal llm_current_page, llm_current_task
+        with progress_lock:
+            event_name = event.get("event")
+            if event_name == "llm_plan":
+                llm_calls_planned += int(event.get("calls_planned") or 0)
+                llm_current_page = str(event.get("page_id") or "-")
+            elif event_name == "llm_call_started":
+                llm_current_task = str(event.get("task") or "-")
+                llm_current_page = str(event.get("page_id") or "-")
+            elif event_name in {"llm_call_finished", "llm_call_failed"}:
+                llm_calls_completed += 1
+                if event.get("cached") is True:
+                    llm_cached_calls_progress += 1
+                llm_current_task = str(event.get("task") or "-")
+                llm_current_page = str(event.get("page_id") or "-")
+            emit_progress()
 
     worker_count = max(1, config.processing.page_workers)
     if provider is not None:
@@ -578,22 +612,23 @@ def enrich_command(
 
     def merge_page_result(page_result: PageProcessResult) -> None:
         nonlocal processed, skipped, considered
-        considered += 1
-        processed += page_result.processed
-        skipped += page_result.skipped
-        context.files_written += page_result.files_written
-        context.llm_retries += page_result.llm_retries
-        context.failures.extend(page_result.failures)
-        context.warnings.extend(page_result.warnings)
-        context.llm_usage.extend(page_result.llm_usage)
-        output_paths.extend(page_result.output_paths)
-        if page_result.enrichment is not None:
-            enrichments.append(page_result.enrichment)
-        if page_result.document_row is not None:
-            document_rows.append(page_result.document_row)
-        if page_result.quality_row is not None:
-            quality_rows.append(page_result.quality_row)
-        emit_progress()
+        with progress_lock:
+            considered += 1
+            processed += page_result.processed
+            skipped += page_result.skipped
+            context.files_written += page_result.files_written
+            context.llm_retries += page_result.llm_retries
+            context.failures.extend(page_result.failures)
+            context.warnings.extend(page_result.warnings)
+            context.llm_usage.extend(page_result.llm_usage)
+            output_paths.extend(page_result.output_paths)
+            if page_result.enrichment is not None:
+                enrichments.append(page_result.enrichment)
+            if page_result.document_row is not None:
+                document_rows.append(page_result.document_row)
+            if page_result.quality_row is not None:
+                quality_rows.append(page_result.quality_row)
+            emit_progress()
 
     executor = ThreadPoolExecutor(max_workers=worker_count)
     futures = [
@@ -611,6 +646,7 @@ def enrich_command(
             document_type_filter=document_type_filter,
             onyx_root=onyx_root,
             event_callback=event_callback,
+            llm_progress_callback=llm_progress_callback if provider is not None else None,
         )
         for bundle in pages
     ]
@@ -757,6 +793,8 @@ def enrich_command(
 
     exit_code = EXIT_PARTIAL_SUCCESS if context.failures or cancelled else EXIT_SUCCESS
     status = "partial_success" if context.failures or cancelled else "success"
+    llm_cached_calls = sum(1 for usage in context.llm_usage if usage.cached)
+    llm_live_calls = len(context.llm_usage) - llm_cached_calls
     counts = {
         "pages_total": validation.pages_total,
         "pages_considered": considered,
@@ -767,6 +805,8 @@ def enrich_command(
         "unchanged_pages": skipped,
         "warnings": len(context.warnings),
         "llm_calls": len(context.llm_usage),
+        "llm_cached_calls": llm_cached_calls,
+        "llm_live_calls": llm_live_calls,
         "llm_retries": context.llm_retries,
         "pages_cancelled": max(0, len(pages) - considered) if cancelled else 0,
     }

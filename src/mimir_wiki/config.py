@@ -72,11 +72,19 @@ class TaskModelConfig(BaseModel):
     prompt_version: str | None = None
 
 
+class TaskBundleConfig(BaseModel):
+    tasks: list[str]
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+
+
 class LLMConfig(BaseModel):
     provider: str = "none"
     model: str = "none"
     prompt_version: str = "enrichment-v1"
     task_models: dict[str, TaskModelConfig] = Field(default_factory=dict)
+    task_bundles: dict[str, TaskBundleConfig] = Field(default_factory=dict)
     temperature: float = 0
     max_concurrency: int = 4
     requests_per_minute: int | None = None
@@ -270,6 +278,10 @@ class AppConfig(BaseModel):
                     key: value.model_dump(mode="json")
                     for key, value in sorted(self.llm.task_models.items())
                 },
+                "task_bundles": {
+                    key: value.model_dump(mode="json")
+                    for key, value in sorted(self.llm.task_bundles.items())
+                },
             },
             "scoring": self.scoring.model_dump(mode="json"),
             "onyx_poc": self.onyx_poc.model_dump(mode="json"),
@@ -294,7 +306,7 @@ def _env_overrides(env: Mapping[str, str | None]) -> dict[str, Any]:
     if provider:
         overrides = deep_merge(overrides, {"llm": {"provider": provider}})
     llm_enabled = env.get("MIMIR_WIKI_LLM_ENABLED")
-    if llm_enabled is not None:
+    if llm_enabled is not None and llm_enabled.strip():
         enabled = llm_enabled.strip().lower() in {"1", "true", "yes", "on"}
         overrides = deep_merge(overrides, {"features": {"llm": {"enabled": enabled}}})
     for env_name, path_key in (

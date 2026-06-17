@@ -216,6 +216,33 @@ llm:
       output: 0.00
 ```
 
+To reduce provider round trips, configure task bundles. Bundled tasks are sent
+as one LLM request per page chunk and merged back into the normal enrichment
+fields:
+
+```yaml
+llm:
+  task_bundles:
+    semantic:
+      tasks:
+        - summary
+        - keywords
+        - themes
+        - concepts
+      model: gpt-5.5
+      prompt_version: semantic-v1
+    operational:
+      tasks:
+        - candidate_entities
+        - operational_signals
+        - quality_warnings
+      model: gpt-5.5
+      prompt_version: operational-v1
+```
+
+With these bundles enabled, the default eight tasks become three calls per page:
+`classification`, `bundle:semantic`, and `bundle:operational`.
+
 ## Outputs
 
 - `pages/{page_id}/enrichment.json`

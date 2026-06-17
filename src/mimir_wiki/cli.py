@@ -106,6 +106,15 @@ def _show_progress(config: AppConfig, *, json_output: bool, quiet: bool) -> bool
     return Console().is_terminal
 
 
+def _snapshot_int(snapshot: dict[str, object], key: str, default: int = 0) -> int:
+    value = snapshot.get(key, default)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return default
+
+
 def _load_runtime_config(
     *,
     config_path: Path | None,
@@ -143,7 +152,7 @@ CacheOption = Annotated[
 ]
 OutOption = Annotated[Path | None, typer.Option("--out", help="Output directory")]
 ProviderOption = Annotated[
-    str,
+    str | None,
     typer.Option(
         "--provider",
         help="LLM provider: none, openai, azure-openai, azure-ai-foundry, or openai-compatible",
@@ -238,7 +247,7 @@ def enrich(
     profile: ProfileOption = None,
     cache: CacheOption = Path("cache"),
     out: OutOption = None,
-    provider: ProviderOption = "none",
+    provider: ProviderOption = None,
     enable_llm: Annotated[
         bool | None, typer.Option("--enable-llm/--disable-llm", help="Enable or disable LLM tasks")
     ] = None,
@@ -306,25 +315,43 @@ def enrich(
                 TaskProgressColumn(),
                 TextColumn(
                     "processed={task.fields[processed]} skipped={task.fields[skipped]} "
-                    "failed={task.fields[failed]} retries={task.fields[retries]}"
+                    "failed={task.fields[failed]} llm={task.fields[llm_done]}/"
+                    "{task.fields[llm_total]} cached={task.fields[llm_cached]} "
+                    "retries={task.fields[retries]} current={task.fields[current]}"
                 ),
                 TimeElapsedColumn(),
                 console=console,
             )
             with progress:
                 task_id = progress.add_task(
-                    "pages", total=1, processed=0, skipped=0, failed=0, retries=0
+                    "pages",
+                    total=1,
+                    processed=0,
+                    skipped=0,
+                    failed=0,
+                    retries=0,
+                    llm_done=0,
+                    llm_total=0,
+                    llm_cached=0,
+                    current="-",
                 )
 
-                def progress_callback(snapshot: dict[str, int]) -> None:
+                def progress_callback(snapshot: dict[str, object]) -> None:
+                    current_task = str(snapshot.get("llm_current_task") or "-")
+                    current_page = str(snapshot.get("llm_current_page") or "-")
+                    current = "-" if current_task == "-" else f"{current_task}:{current_page}"
                     progress.update(
                         task_id,
-                        total=max(1, snapshot["total"]),
-                        completed=snapshot["considered"],
-                        processed=snapshot["processed"],
-                        skipped=snapshot["skipped"],
-                        failed=snapshot["failed"],
-                        retries=snapshot["llm_retries"],
+                        total=max(1, _snapshot_int(snapshot, "total", 1)),
+                        completed=_snapshot_int(snapshot, "considered"),
+                        processed=_snapshot_int(snapshot, "processed"),
+                        skipped=_snapshot_int(snapshot, "skipped"),
+                        failed=_snapshot_int(snapshot, "failed"),
+                        retries=_snapshot_int(snapshot, "llm_retries"),
+                        llm_done=_snapshot_int(snapshot, "llm_calls_completed"),
+                        llm_total=_snapshot_int(snapshot, "llm_calls_planned"),
+                        llm_cached=_snapshot_int(snapshot, "llm_cached_calls"),
+                        current=current,
                     )
 
                 result = enrich_command(

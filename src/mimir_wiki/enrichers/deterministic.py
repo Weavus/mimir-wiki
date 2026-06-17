@@ -55,6 +55,24 @@ STOPWORDS = {
     "you",
 }
 
+GENERIC_ENTITY_TERMS = {
+    "access",
+    "analysis",
+    "api",
+    "business",
+    "business document",
+    "business documents",
+    "capacity",
+    "cases",
+    "document",
+    "documents",
+    "performance",
+    "provisioning",
+    "run",
+    "test",
+    "use",
+}
+
 DOCUMENT_TYPE_RULES: list[tuple[str, list[str]]] = [
     ("archive", ["archive", "archived", "obsolete", "deprecated", "retired"]),
     ("rca", ["rca", "root cause", "postmortem", "post-mortem", "incident review"]),
@@ -231,12 +249,16 @@ def extract_candidate_entities(bundle: PageBundle, keywords: list[str]) -> list[
     for link in bundle.links.links:
         if link.target_title:
             candidates.append((link.target_title, "link_target_title"))
-        elif link.text:
+        elif link.text and len(link.text) <= 80:
             candidates.append((link.text, "link_text"))
     for raw_name, source_field in candidates:
         name = re.sub(r"\s+", " ", raw_name).strip(" -_#")
         normalized = normalize_term(name)
         if not normalized or normalized in STOPWORDS or len(normalized) < 3:
+            continue
+        if normalized in GENERIC_ENTITY_TERMS:
+            continue
+        if source_field == "keyword" and len(normalized.split()) == 1:
             continue
         entity_type = infer_entity_type(name, source_field)
         key = (entity_type, normalized)
@@ -299,6 +321,8 @@ def extract_candidate_facts(
     for line in lines:
         stripped = re.sub(r"\s+", " ", line.strip())
         lowered = stripped.lower()
+        if stripped.startswith("#"):
+            continue
         if len(stripped) > 300 or len(stripped) < 12:
             continue
 
@@ -312,7 +336,7 @@ def extract_candidate_facts(
             ("depends_on", r"dependenc(?:y|ies)\s*[:=-]\s*(.+)$", 0.55),
             ("uses_database", r"database(?:s)?\s*[:=-]\s*(.+)$", 0.55),
             ("uses_queue", r"queue(?:s)?\s*[:=-]\s*(.+)$", 0.55),
-            ("uses_api", r"api(?:s)?\s*[:=-]\s*(.+)$", 0.55),
+            ("uses_api", r"^api(?:s)?\s*[:=]\s*(.+)$", 0.55),
             ("has_dashboard", r"dashboard(?:s)?\s*[:=-]\s*(.+)$", 0.55),
             ("has_log_source", r"logs?(?: source| location)?\s*[:=-]\s*(.+)$", 0.55),
             ("has_alert", r"alerts?\s*[:=-]\s*(.+)$", 0.55),
@@ -353,7 +377,7 @@ def extract_candidate_facts(
         step_specs = [
             ("has_diagnostic_step", ("check", "verify", "diagnos", "triage")),
             ("has_recovery_step", ("restart", "recover", "restore", "mitigate", "fix")),
-            ("has_validation_step", ("validate", "confirm", "test")),
+            ("has_validation_step", ("validate", "validation", "confirm")),
             ("has_backout_step", ("rollback", "roll back", "backout", "back out")),
         ]
         for predicate, markers in step_specs:

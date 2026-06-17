@@ -53,6 +53,22 @@ llm:
   provider: azure-ai-foundry
   model: gpt-5.5
   prompt_version: enrichment-v1
+  task_bundles:
+    semantic:
+      tasks:
+        - summary
+        - keywords
+        - themes
+        - concepts
+      model: gpt-5.5
+      prompt_version: semantic-v1
+    operational:
+      tasks:
+        - candidate_entities
+        - operational_signals
+        - quality_warnings
+      model: gpt-5.5
+      prompt_version: operational-v1
   task_models:
     classification:
       provider: azure-ai-foundry

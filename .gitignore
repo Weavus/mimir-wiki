@@ -10,5 +10,9 @@ exports/
 __pycache__/
 *.egg-info/
 dist/
+knowledge/
+reports/
+runs/
 build/
 .uv-cache/
+.mimir-wiki/

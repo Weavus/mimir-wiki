@@ -86,6 +86,27 @@ llm:
       provider: azure-openai
       model: gpt-4.1
       prompt_version: quality-warnings-v1
+  # Optional call reduction. When bundles are configured, enabled tasks listed
+  # here are requested together and merged back into the normal enrichment
+  # fields. Tasks not included in a bundle still run as individual calls.
+  task_bundles:
+    semantic:
+      tasks:
+        - summary
+        - keywords
+        - themes
+        - concepts
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: semantic-v1
+    operational:
+      tasks:
+        - candidate_entities
+        - operational_signals
+        - quality_warnings
+      provider: azure-openai
+      model: gpt-4.1
+      prompt_version: operational-v1
   temperature: 0
   max_concurrency: 4
   requests_per_minute:

@@ -14,6 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
 from mimir_wiki.constants import DOCUMENT_TYPES
+from mimir_wiki.enrichers.deterministic import (
+    categories_for,
+    entity_bucket,
+    warnings_for,
+)
 from mimir_wiki.llm.base import (
     LLMError,
     LLMProvider,
@@ -30,7 +35,17 @@ from mimir_wiki.schemas import (
     PageFailure,
     WarningRecord,
 )
-from mimir_wiki.utils import atomic_write_json, load_json, normalize_term, stable_hash
+from mimir_wiki.scoring import build_quality, currentness, quality_band
+from mimir_wiki.utils import atomic_write_json, load_json, normalize_term, stable_hash, word_count
+
+DETERMINISTIC_WARNING_TYPES = {
+    "source_is_archived_or_deprecated",
+    "low_quality_score",
+    "missing_explicit_owner",
+    "missing_validation_steps",
+    "missing_backout_steps",
+    "attachments_present_not_parsed",
+}
 
 
 class LLMTaskModel(BaseModel):
@@ -86,6 +101,26 @@ class QualityWarningsResponse(LLMTaskModel):
     warnings: list[str] = Field(default_factory=list, max_length=100)
 
 
+class BundleResponse(LLMTaskModel):
+    document_type: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    short_summary: str | None = Field(default=None, max_length=1000)
+    detailed_summary: str | None = Field(default=None, max_length=6000)
+    keywords: list[str] | None = Field(default=None, max_length=50)
+    themes: list[str] | None = Field(default=None, max_length=50)
+    concepts: list[str] | None = Field(default=None, max_length=80)
+    candidate_entities: list[LLMCandidateEntity] | None = Field(default=None, max_length=100)
+    operational_signals: OperationalSignals | None = None
+    warnings: list[str] | None = Field(default=None, max_length=100)
+
+    @field_validator("document_type")
+    @classmethod
+    def optional_document_type_supported(cls, value: str | None) -> str | None:
+        if value is not None and value not in DOCUMENT_TYPES:
+            raise ValueError(f"unsupported document_type: {value}")
+        return value
+
+
 TASK_RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "classification": ClassificationResponse,
     "summary": SummaryResponse,
@@ -96,6 +131,17 @@ TASK_RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "operational_signals": OperationalSignalsResponse,
     "quality_warnings": QualityWarningsResponse,
 }
+
+
+@dataclass(frozen=True)
+class LLMWorkItem:
+    name: str
+    prompt_task: str
+    tasks: list[str]
+    provider: str
+    model: str
+    prompt_version: str
+
 
 PROMPT_CONTRACTS = {
     "classification": '{"document_type":"runbook","confidence":0.0}',
@@ -127,6 +173,44 @@ def enabled_llm_tasks(config: AppConfig) -> list[str]:
     return sorted(task for task, enabled in config.features.llm.tasks.items() if enabled)
 
 
+def enabled_llm_work_items(config: AppConfig) -> list[LLMWorkItem]:
+    tasks = enabled_llm_tasks(config)
+    if not tasks:
+        return []
+    bundled_tasks: set[str] = set()
+    work_items: list[LLMWorkItem] = []
+    for bundle_name, bundle in sorted(config.llm.task_bundles.items()):
+        bundle_tasks = [task for task in bundle.tasks if task in tasks]
+        if not bundle_tasks:
+            continue
+        bundled_tasks.update(bundle_tasks)
+        work_items.append(
+            LLMWorkItem(
+                name=f"bundle:{bundle_name}",
+                prompt_task=bundle_name,
+                tasks=bundle_tasks,
+                provider=bundle.provider or config.llm.provider,
+                model=bundle.model or config.llm.model,
+                prompt_version=bundle.prompt_version or f"{bundle_name}-v1",
+            )
+        )
+    for task in tasks:
+        if task in bundled_tasks:
+            continue
+        route = config.llm.route_for(task)
+        work_items.append(
+            LLMWorkItem(
+                name=task,
+                prompt_task=task,
+                tasks=[task],
+                provider=route.provider or config.llm.provider,
+                model=route.model or config.llm.model,
+                prompt_version=route.prompt_version or config.llm.prompt_version,
+            )
+        )
+    return work_items
+
+
 def apply_llm_enrichment(
     *,
     bundle: PageBundle,
@@ -137,9 +221,10 @@ def apply_llm_enrichment(
     generated_at: str,
     provider: LLMProvider,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> LLMEnrichmentResult:
-    tasks = enabled_llm_tasks(config)
-    if not tasks:
+    work_items = enabled_llm_work_items(config)
+    if not work_items:
         return LLMEnrichmentResult(enrichment=enrichment)
     return asyncio.run(
         _apply_llm_enrichment_async(
@@ -150,8 +235,9 @@ def apply_llm_enrichment(
             dataset_name=dataset_name,
             generated_at=generated_at,
             provider=provider,
-            tasks=tasks,
+            work_items=work_items,
             event_callback=event_callback,
+            progress_callback=progress_callback,
         )
     )
 
@@ -165,12 +251,23 @@ async def _apply_llm_enrichment_async(
     dataset_name: str,
     generated_at: str,
     provider: LLMProvider,
-    tasks: list[str],
+    work_items: list[LLMWorkItem],
     event_callback: Callable[[dict[str, Any]], None] | None,
+    progress_callback: Callable[[dict[str, Any]], None] | None,
 ) -> LLMEnrichmentResult:
     client = RateLimitedLLMClient(provider, config.llm, retry_callback=event_callback)
     result = LLMEnrichmentResult(enrichment=enrichment)
     chunks, truncated = chunk_text(bundle.text, config)
+    if progress_callback:
+        progress_callback(
+            {
+                "event": "llm_plan",
+                "page_id": bundle.metadata.page_id,
+                "space_key": bundle.metadata.space_key,
+                "calls_planned": len(work_items) * len(chunks),
+                "chunk_count": len(chunks),
+            }
+        )
     if truncated:
         result.warnings.append(
             _warning(
@@ -182,13 +279,13 @@ async def _apply_llm_enrichment_async(
                 "LLM input exceeded max_chunks_per_document and was truncated.",
             )
         )
-    for task in tasks:
-        route = config.llm.route_for(task)
+    for work_item in work_items:
         task_payloads: list[dict[str, Any]] = []
         for chunk_index, chunk in enumerate(chunks, start=1):
             prompt = build_prompt(
-                task=task,
-                prompt_version=route.prompt_version or config.llm.prompt_version,
+                task=work_item.prompt_task,
+                prompt_version=work_item.prompt_version,
+                requested_tasks=work_item.tasks,
                 bundle=bundle,
                 enrichment=result.enrichment,
                 chunk=chunk,
@@ -196,23 +293,34 @@ async def _apply_llm_enrichment_async(
                 chunk_count=len(chunks),
             )
             request = LLMRequest(
-                task=task,
+                task=work_item.name,
                 prompt=prompt,
                 document_id=bundle.document_id,
-                model=route.model,
-                prompt_version=route.prompt_version,
+                model=work_item.model,
+                prompt_version=work_item.prompt_version,
             )
             started = time.monotonic()
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "llm_call_started",
+                        "page_id": bundle.metadata.page_id,
+                        "space_key": bundle.metadata.space_key,
+                        "task": work_item.name,
+                        "chunk_index": chunk_index,
+                        "chunk_count": len(chunks),
+                    }
+                )
             try:
                 response, attempts, retries = await complete_with_cache(
                     client=client,
                     request=request,
                     config=config,
-                    route_provider=route.provider or config.llm.provider,
+                    route_provider=work_item.provider,
                     source_content_hash=bundle.source_content_hash,
                 )
                 result.retries += retries
-                payload = validate_task_payload(task, parse_json_response(response.text))
+                payload = validate_work_item_payload(work_item, parse_json_response(response.text))
                 task_payloads.append(payload)
                 result.usage.append(
                     LLMUsage(
@@ -223,10 +331,10 @@ async def _apply_llm_enrichment_async(
                         space_key=bundle.metadata.space_key,
                         source_updated_at=bundle.metadata.updated_at,
                         source_content_hash=bundle.source_content_hash,
-                        task=task,
-                        provider=route.provider or config.llm.provider,
+                        task=work_item.name,
+                        provider=work_item.provider,
                         model=response.model,
-                        prompt_version=route.prompt_version or config.llm.prompt_version,
+                        prompt_version=work_item.prompt_version,
                         input_tokens=response.input_tokens,
                         output_tokens=response.output_tokens,
                         cached=response.cached,
@@ -234,7 +342,7 @@ async def _apply_llm_enrichment_async(
                         retries=retries,
                         elapsed_ms=round((time.monotonic() - started) * 1000),
                         estimated_cost_usd=estimate_llm_cost(
-                            provider=route.provider or config.llm.provider,
+                            provider=work_item.provider,
                             model=response.model,
                             input_tokens=response.input_tokens,
                             output_tokens=response.output_tokens,
@@ -243,24 +351,94 @@ async def _apply_llm_enrichment_async(
                         generated_at=generated_at,
                     )
                 )
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "llm_call_finished",
+                            "page_id": bundle.metadata.page_id,
+                            "space_key": bundle.metadata.space_key,
+                            "task": work_item.name,
+                            "chunk_index": chunk_index,
+                            "chunk_count": len(chunks),
+                            "cached": response.cached,
+                            "retries": retries,
+                        }
+                    )
             except (LLMError, ValueError, ValidationError) as exc:
                 failure = _failure(
                     run_id=run_id,
                     dataset_name=dataset_name,
                     generated_at=generated_at,
                     bundle=bundle,
-                    stage=f"llm.{task}",
+                    stage=f"llm.{work_item.name}",
                     exc=exc,
                     attempts=getattr(exc, "attempts", 1),
                 )
                 result.failures.append(failure)
                 result.enrichment.llm_failures.append(failure.model_dump(mode="json"))
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "llm_call_failed",
+                            "page_id": bundle.metadata.page_id,
+                            "space_key": bundle.metadata.space_key,
+                            "task": work_item.name,
+                            "chunk_index": chunk_index,
+                            "chunk_count": len(chunks),
+                            "error_type": failure.error_type,
+                        }
+                    )
                 if config.llm.fail_fast or config.processing.fail_fast:
                     return result
         if task_payloads:
-            merge_task_payload(result.enrichment, task, task_payloads, bundle)
+            for task in work_item.tasks:
+                merge_task_payload(result.enrichment, task, task_payloads, bundle)
+    finalize_llm_enrichment(result.enrichment, bundle, config)
     result.enrichment.chunk_count = max(result.enrichment.chunk_count, len(chunks))
     return result
+
+
+def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: AppConfig) -> None:
+    enrichment.quality = build_quality(
+        document_type=enrichment.document_type,
+        updated_at=bundle.metadata.updated_at,
+        status_flags=enrichment.status_flags,
+        word_count=word_count(bundle.text),
+        heading_count=len(enrichment.headings),
+        signals=enrichment.operational_signals,
+        outbound_link_count=len(bundle.links.links),
+        config=config.scoring,
+    )
+    enrichment.quality_band = quality_band(enrichment.quality.overall_score)
+    historical, current = currentness(
+        enrichment.document_type, enrichment.status_flags, bundle.metadata.updated_at
+    )
+    enrichment.historical = historical
+    enrichment.currentness = current
+    enrichment.ONYX_METADATA.document_type = enrichment.document_type
+    enrichment.ONYX_METADATA.quality_band = enrichment.quality_band
+    enrichment.ONYX_METADATA.historical = historical
+    enrichment.ONYX_METADATA.currentness = current
+    enrichment.entities = entity_bucket(enrichment.candidate_entities)
+    enrichment.categories = categories_for(bundle, enrichment.document_type, enrichment.keywords)
+    if enrichment.document_type != "unknown":
+        enrichment.themes = [
+            theme for theme in enrichment.themes if normalize_term(theme) != "unknown"
+        ]
+    custom_warnings = [
+        warning for warning in enrichment.warnings if warning not in DETERMINISTIC_WARNING_TYPES
+    ]
+    recalculated = warnings_for(
+        document_type=enrichment.document_type,
+        quality_score=enrichment.quality.overall_score,
+        signals=enrichment.operational_signals,
+        status_flags=enrichment.status_flags,
+        attachment_count=len(bundle.attachment_names),
+    )
+    enrichment.warnings = _merge_strings(custom_warnings, recalculated, 60)
+    enrichment.confidence = min(
+        0.95, (enrichment.document_type_confidence + enrichment.quality.overall_score / 100) / 2
+    )
 
 
 def chunk_text(text: str, config: AppConfig) -> tuple[list[str], bool]:
@@ -289,6 +467,7 @@ def build_prompt(
     *,
     task: str,
     prompt_version: str,
+    requested_tasks: list[str],
     bundle: PageBundle,
     enrichment: Enrichment,
     chunk: str,
@@ -305,14 +484,26 @@ def build_prompt(
         "deterministic_keywords": enrichment.keywords,
         "chunk_index": chunk_index,
         "chunk_count": chunk_count,
+        "requested_tasks": requested_tasks,
     }
     template = load_prompt_template(task, prompt_version)
     return template.format(
         task=task,
-        contract=PROMPT_CONTRACTS.get(task, "{}"),
+        contract=prompt_contract_for_tasks(requested_tasks),
         metadata_json=json.dumps(base, sort_keys=True),
         chunk=chunk,
     )
+
+
+def prompt_contract_for_tasks(tasks: list[str]) -> str:
+    if len(tasks) == 1:
+        return PROMPT_CONTRACTS.get(tasks[0], "{}")
+    parts = []
+    for task in tasks:
+        contract = PROMPT_CONTRACTS.get(task)
+        if contract:
+            parts.append(contract.strip("{}"))
+    return "{" + ",".join(part for part in parts if part) + "}"
 
 
 def load_prompt_template(task: str, prompt_version: str) -> str:
@@ -397,6 +588,30 @@ def validate_task_payload(task: str, payload: dict[str, Any]) -> dict[str, Any]:
     if model is None:
         return payload
     return model.model_validate(payload).model_dump(mode="python", exclude_none=True)
+
+
+def validate_work_item_payload(work_item: LLMWorkItem, payload: dict[str, Any]) -> dict[str, Any]:
+    if len(work_item.tasks) == 1:
+        return validate_task_payload(work_item.tasks[0], payload)
+    validated = BundleResponse.model_validate(payload).model_dump(mode="python", exclude_none=True)
+    for task in work_item.tasks:
+        task_payload = {key: validated[key] for key in _task_payload_keys(task) if key in validated}
+        if task_payload:
+            validate_task_payload(task, task_payload)
+    return validated
+
+
+def _task_payload_keys(task: str) -> tuple[str, ...]:
+    return {
+        "classification": ("document_type", "confidence"),
+        "summary": ("short_summary", "detailed_summary"),
+        "keywords": ("keywords",),
+        "themes": ("themes",),
+        "concepts": ("concepts",),
+        "candidate_entities": ("candidate_entities",),
+        "operational_signals": ("operational_signals",),
+        "quality_warnings": ("warnings",),
+    }.get(task, tuple())
 
 
 def estimate_llm_cost(

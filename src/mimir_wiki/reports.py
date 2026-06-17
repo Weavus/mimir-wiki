@@ -267,6 +267,8 @@ def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
         grouped[(item.provider, item.model, item.task)].append(item)
     rows = []
     for (provider, model, task), items in sorted(grouped.items()):
+        cached = sum(1 for item in items if item.cached)
+        hit_rate = cached / len(items) if items else 0
         rows.append(
             [
                 provider,
@@ -275,7 +277,8 @@ def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
                 str(len(items)),
                 str(sum(item.input_tokens or 0 for item in items)),
                 str(sum(item.output_tokens or 0 for item in items)),
-                str(sum(1 for item in items if item.cached)),
+                str(cached),
+                f"{hit_rate:.0%}",
                 str(sum(item.retries for item in items)),
                 f"{sum(item.estimated_cost_usd or 0 for item in items):.6f}",
             ]
@@ -290,6 +293,7 @@ def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
                 "Input tokens",
                 "Output tokens",
                 "Cached",
+                "Cache hit rate",
                 "Retries",
                 "Est. cost USD",
             ],

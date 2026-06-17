@@ -37,6 +37,27 @@ profiles:
     assert resolved["llm"]["openai"]["api_key_env"] == "[REDACTED]"
 
 
+def test_blank_dotenv_llm_override_does_not_disable_yaml(tmp_path: Path, monkeypatch) -> None:
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        """
+llm:
+  provider: azure-ai-foundry
+features:
+  llm:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text("MIMIR_WIKI_LLM_ENABLED=\nMIMIR_WIKI_PROVIDER=\n", encoding="utf-8")
+    monkeypatch.delenv("MIMIR_WIKI_LLM_ENABLED", raising=False)
+    monkeypatch.delenv("MIMIR_WIKI_PROVIDER", raising=False)
+    config = load_config(config_path=config_file, env_file=env_file)
+    assert config.features.llm.enabled is True
+    assert config.llm.provider == "azure-ai-foundry"
+
+
 def test_example_config_loads() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     config = load_config(config_path=repo_root / "mimir-wiki.yaml.example")
