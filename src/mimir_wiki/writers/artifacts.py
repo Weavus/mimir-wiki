@@ -72,6 +72,14 @@ def document_index_row(
         heading_count=len(enrichment.headings),
         text_simhash=simhash64(bundle.text),
         heading_simhash=simhash64(" ".join(enrichment.headings)),
+        hierarchy_depth=enrichment.hierarchy.depth,
+        parent_title=enrichment.hierarchy.parent_title,
+        root_title=enrichment.hierarchy.root_title,
+        section_path=enrichment.hierarchy.section_path,
+        page_role=enrichment.hierarchy.page_role,
+        parent_context_type=enrichment.hierarchy.parent_context_type,
+        sibling_count=enrichment.hierarchy.sibling_count,
+        child_count=enrichment.hierarchy.child_count,
         generated_at=generated_at,
     )
 

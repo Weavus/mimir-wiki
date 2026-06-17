@@ -177,6 +177,10 @@ Source updated at: {enrichment.source_updated_at or "unknown"}
 Source content hash: {enrichment.source_content_hash}
 Source URL: {bundle.metadata.url or "unknown"}
 Attachment count: {len(bundle.attachment_names)}
+Hierarchy depth: {enrichment.hierarchy.depth}
+Parent section: {enrichment.hierarchy.parent_title or "none"}
+Page role: {enrichment.hierarchy.page_role}
+Section path: {enrichment.hierarchy.section_path or "unknown"}
 """
     return first_line + body, truncation_warnings
 
@@ -220,6 +224,13 @@ def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
     if title != bundle.metadata.title:
         facts.append(f"- Original source title: {bundle.metadata.title}")
     facts.append(f"- Source space: {bundle.metadata.space_key}")
+    if enrichment.hierarchy.parent_title:
+        facts.append(f"- Parent section: {enrichment.hierarchy.parent_title}")
+    if enrichment.hierarchy.section_path:
+        facts.append(f"- Section path: {enrichment.hierarchy.section_path}")
+    facts.append(f"- Page role: {enrichment.hierarchy.page_role}")
+    if enrichment.hierarchy.parent_context_type:
+        facts.append(f"- Parent context: {enrichment.hierarchy.parent_context_type}")
     facts.append(f"- Document type: {enrichment.document_type}")
     if enrichment.document_subtype:
         facts.append(f"- Document subtype: {enrichment.document_subtype}")

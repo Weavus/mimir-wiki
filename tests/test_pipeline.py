@@ -28,6 +28,8 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     enrichment = json.loads(enrichment_path.read_text(encoding="utf-8"))
     assert enrichment["schema_version"] == "mimir-wiki/v1"
     assert enrichment["document_type"] == "runbook"
+    assert enrichment["hierarchy"]["parent_title"] == "Runbooks"
+    assert enrichment["hierarchy"]["page_role"] == "runbook_detail"
     assert enrichment["candidate_facts"]
     predicates = {fact["predicate"] for fact in enrichment["candidate_facts"]}
     assert "owned_by" in predicates
@@ -40,6 +42,14 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert (tmp_path / "knowledge" / "candidate_entities.jsonl").exists()
     assert (tmp_path / "knowledge" / "facts.jsonl").exists()
     assert (tmp_path / "knowledge" / "facts.jsonl").read_text(encoding="utf-8").strip()
+    document_index = [
+        json.loads(line)
+        for line in (tmp_path / "knowledge" / "document_index.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert document_index[0]["parent_title"] == "Runbooks"
+    assert document_index[0]["page_role"] == "runbook_detail"
     onyx_files = list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
     assert len(onyx_files) == 1
     first_line = onyx_files[0].read_text(encoding="utf-8").splitlines()[0]
@@ -52,9 +62,12 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert "run_id" not in metadata
     assert "## Answer Summary" in onyx_content
     assert "## Key Facts" in onyx_content
+    assert "- Parent section: Runbooks" in onyx_content
+    assert "- Page role: runbook_detail" in onyx_content
     assert onyx_content.index("## Source Content") < onyx_content.index("## Enrichment Details")
     assert (tmp_path / "reports" / "enrichment_summary.md").exists()
     assert (tmp_path / "reports" / "duplicate_candidates.md").exists()
+    assert (tmp_path / "reports" / "high_value_subtrees.md").exists()
     assert (tmp_path / "reports" / "llm_usage.md").exists()
     assert any((tmp_path / "runs").glob("*/summary.json"))
 

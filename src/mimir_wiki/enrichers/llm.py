@@ -24,6 +24,7 @@ from mimir_wiki.enrichers.deterministic import (
     is_procedural_runbook,
     warnings_for,
 )
+from mimir_wiki.hierarchy import adjust_quality_for_hierarchy
 from mimir_wiki.llm.base import (
     LLMError,
     LLMProvider,
@@ -473,6 +474,7 @@ def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: 
         outbound_link_count=len(bundle.links.links),
         config=config.scoring,
     )
+    enrichment.quality = adjust_quality_for_hierarchy(enrichment.quality, enrichment.hierarchy)
     enrichment.quality_band = quality_band(enrichment.quality.overall_score)
     enrichment.ONYX_METADATA.quality_band = enrichment.quality_band
     enrichment.ONYX_METADATA.historical = historical
@@ -544,6 +546,8 @@ def build_prompt(
         "chunk_index": chunk_index,
         "chunk_count": chunk_count,
         "requested_tasks": requested_tasks,
+        "ancestor_titles": bundle.ancestor_titles,
+        "hierarchy": enrichment.hierarchy.model_dump(mode="json"),
     }
     template = load_prompt_template(task, prompt_version)
     return template.format(

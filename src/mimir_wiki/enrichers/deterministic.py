@@ -5,12 +5,14 @@ from collections import Counter
 
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
+from mimir_wiki.hierarchy import adjust_quality_for_hierarchy, build_hierarchy_context
 from mimir_wiki.schemas import (
     CandidateEntity,
     CandidateFact,
     CandidateMention,
     Enrichment,
     EnrichmentSignature,
+    HierarchyContext,
     OnyxMetadata,
     OperationalSignals,
 )
@@ -708,8 +710,15 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
 
 
 def enrich_page(
-    bundle: PageBundle, *, run_id: str, dataset_name: str, config: AppConfig, generated_at: str
+    bundle: PageBundle,
+    *,
+    run_id: str,
+    dataset_name: str,
+    config: AppConfig,
+    generated_at: str,
+    hierarchy: HierarchyContext | None = None,
 ) -> Enrichment:
+    hierarchy = hierarchy or build_hierarchy_context(bundle)
     headings = extract_headings(bundle.clean_markdown)
     document_type, document_type_confidence = classify_document(bundle)
     document_subtype = infer_document_subtype(bundle, document_type)
@@ -730,6 +739,7 @@ def enrich_page(
         outbound_link_count=len(bundle.links.links),
         config=config.scoring,
     )
+    quality = adjust_quality_for_hierarchy(quality, hierarchy)
     band = quality_band(quality.overall_score)
     historical, current = currentness(document_type, flags, bundle.metadata.updated_at)
     short_summary, detailed_summary = summarize(bundle, document_type, keywords)
@@ -778,6 +788,7 @@ def enrich_page(
         document_type=document_type,
         document_type_confidence=document_type_confidence,
         document_subtype=document_subtype,
+        hierarchy=hierarchy,
         short_summary=short_summary,
         detailed_summary=detailed_summary,
         keywords=keywords,

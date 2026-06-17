@@ -2,8 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mimir_wiki.reports import write_duplicate_candidates_report, write_llm_usage_report
-from mimir_wiki.schemas import DocumentIndexRow, LLMUsage
+from mimir_wiki.reports import (
+    write_duplicate_candidates_report,
+    write_high_value_subtrees_report,
+    write_llm_usage_report,
+)
+from mimir_wiki.schemas import (
+    DocumentIndexRow,
+    Enrichment,
+    EnrichmentSignature,
+    HierarchyContext,
+    LLMUsage,
+    OnyxMetadata,
+    Quality,
+)
 from mimir_wiki.writers.artifacts import aggregate_concept_rows, aggregate_theme_rows
 
 
@@ -78,8 +90,6 @@ def test_llm_usage_report_includes_cache_hit_rate(tmp_path: Path) -> None:
 
 
 def test_aggregate_taxonomy_drops_one_off_single_word_noise() -> None:
-    from mimir_wiki.schemas import Enrichment, EnrichmentSignature, OnyxMetadata, Quality
-
     def enrichment(page_id: str, themes: list[str], concepts: list[str]) -> Enrichment:
         return Enrichment(
             run_id="run-1",
@@ -138,3 +148,52 @@ def test_aggregate_taxonomy_drops_one_off_single_word_noise() -> None:
     assert "datadog" in {row.normalized_theme for row in themes}
     assert "k6" in {row.normalized_concept for row in concepts}
     assert "create user" in {row.normalized_theme for row in themes}
+
+
+def test_high_value_subtrees_report_groups_by_parent(tmp_path: Path) -> None:
+    enrichment = Enrichment(
+        run_id="run-1",
+        generated_at="2026-06-17T00:00:00Z",
+        dataset_name="tiny",
+        document_id="confluence:SPACE:1",
+        page_id="1",
+        space_key="SPACE",
+        source_content_hash="sha256:a",
+        enriched_at="2026-06-17T00:00:00Z",
+        ONYX_METADATA=OnyxMetadata(
+            link="https://example.com",
+            file_display_name="Doc",
+            doc_updated_at="2026-06-17T00:00:00Z",
+        ),
+        document_type="runbook",
+        document_type_confidence=0.8,
+        short_summary="summary",
+        detailed_summary="details",
+        hierarchy=HierarchyContext(
+            parent_title="IAM SCIM API - Runbook", page_role="runbook_detail"
+        ),
+        quality=Quality(
+            freshness_score=80,
+            authority_score=90,
+            completeness_score=70,
+            operational_value_score=90,
+            ownership_clarity_score=0,
+            staleness_risk_score=20,
+            contradiction_risk_score=10,
+            overall_score=75,
+        ),
+        quality_band="good",
+        confidence=0.8,
+        signatures=EnrichmentSignature(
+            source_content_hash="sha256:a",
+            prompt_version="v1",
+            provider="none",
+            model_or_deployment="none",
+            tasks=[],
+            enrichment_config_hash="hash",
+        ),
+    )
+    path = write_high_value_subtrees_report(out_dir=tmp_path, enrichments=[enrichment])
+    content = path.read_text(encoding="utf-8")
+    assert "IAM SCIM API - Runbook" in content
+    assert "runbook_detail" in content

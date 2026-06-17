@@ -15,11 +15,13 @@ from mimir_wiki.config import AppConfig
 from mimir_wiki.constants import EXIT_PARTIAL_SUCCESS, EXIT_SUCCESS, EXIT_USER_ERROR
 from mimir_wiki.enrichers.deterministic import enrich_page, refreshed_for_run, signature_matches
 from mimir_wiki.enrichers.llm import apply_llm_enrichment, enabled_llm_tasks
+from mimir_wiki.hierarchy import build_hierarchy_context, build_tree_counts
 from mimir_wiki.llm.base import LLMError, LLMProvider, provider_for_config
 from mimir_wiki.reports import write_cache_validation_report, write_enrichment_reports
 from mimir_wiki.schemas import (
     DocumentIndexRow,
     Enrichment,
+    HierarchyContext,
     LLMUsage,
     PageFailure,
     QualityScoreRow,
@@ -316,6 +318,7 @@ def _process_page(
     onyx_root: Path,
     event_callback: Callable[[dict[str, Any]], None] | None,
     llm_progress_callback: Callable[[dict[str, Any]], None] | None,
+    hierarchy: HierarchyContext | None,
 ) -> PageProcessResult:
     result = PageProcessResult(page_id=bundle.metadata.page_id)
     enrichment_path = bundle.paths.root / "enrichment.json"
@@ -353,6 +356,7 @@ def _process_page(
                 dataset_name=dataset_name,
                 config=config,
                 generated_at=generated_at,
+                hierarchy=hierarchy,
             )
             if provider is not None:
                 llm_result = apply_llm_enrichment(
@@ -509,6 +513,18 @@ def enrich_command(
         return CommandResult(summary=summary)
 
     pages = reader.iter_pages(limit=limit, space_filter=space_filter)
+    child_counts, sibling_group_counts = build_tree_counts(pages)
+    hierarchy_by_page_id = {
+        page.metadata.page_id: build_hierarchy_context(
+            page,
+            child_count=child_counts.get(page.metadata.page_id, 0),
+            sibling_count=sibling_group_counts.get(
+                (page.metadata.ancestors[-1].id if page.metadata.ancestors else None) or "__root__",
+                1,
+            ),
+        )
+        for page in pages
+    }
     enrichments: list[Enrichment] = []
     document_rows: list[DocumentIndexRow] = []
     quality_rows: list[QualityScoreRow] = []
@@ -647,6 +663,7 @@ def enrich_command(
             onyx_root=onyx_root,
             event_callback=event_callback,
             llm_progress_callback=llm_progress_callback if provider is not None else None,
+            hierarchy=hierarchy_by_page_id.get(bundle.metadata.page_id),
         )
         for bundle in pages
     ]

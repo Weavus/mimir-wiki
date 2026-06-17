@@ -164,6 +164,35 @@ def write_missing_owners_report(*, out_dir: Path, enrichments: list[Enrichment])
     return path
 
 
+def write_high_value_subtrees_report(*, out_dir: Path, enrichments: list[Enrichment]) -> Path:
+    grouped: dict[str, list[Enrichment]] = defaultdict(list)
+    for enrichment in enrichments:
+        key = enrichment.hierarchy.parent_title or enrichment.hierarchy.root_title or "unknown"
+        grouped[key].append(enrichment)
+    rows: list[list[str]] = []
+    for section, items in grouped.items():
+        average_quality = round(sum(item.quality.overall_score for item in items) / len(items))
+        operational_pages = sum(
+            1
+            for item in items
+            if item.document_type in {"runbook", "support_model", "architecture"}
+        )
+        roles = ", ".join(sorted({item.hierarchy.page_role for item in items})[:8])
+        rows.append([section, str(len(items)), str(average_quality), str(operational_pages), roles])
+    rows.sort(key=lambda row: (int(row[2]), int(row[1])), reverse=True)
+    table = (
+        markdown_table(
+            ["Section", "Pages", "Avg quality", "Operational pages", "Roles"], rows[:100]
+        )
+        if rows
+        else "No hierarchy sections found."
+    )
+    content = f"# High Value Subtrees\n\n{table}\n"
+    path = out_dir / "high_value_subtrees.md"
+    atomic_write_text(path, content)
+    return path
+
+
 def write_attachment_followups_report(
     *, out_dir: Path, document_rows: list[DocumentIndexRow]
 ) -> Path:
@@ -355,6 +384,7 @@ def write_enrichment_reports(
             out_dir=out_dir, document_rows=document_rows, quality_rows=quality_rows
         ),
         write_missing_owners_report(out_dir=out_dir, enrichments=enrichments),
+        write_high_value_subtrees_report(out_dir=out_dir, enrichments=enrichments),
         write_attachment_followups_report(out_dir=out_dir, document_rows=document_rows),
         write_duplicate_candidates_report(out_dir=out_dir, document_rows=document_rows),
         write_llm_usage_report(out_dir=out_dir, usage=llm_usage or []),

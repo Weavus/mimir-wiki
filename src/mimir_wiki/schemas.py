@@ -174,6 +174,22 @@ class Quality(BaseModel):
     overall_score: int = Field(ge=0, le=100)
 
 
+class HierarchyContext(BaseModel):
+    ancestor_titles: list[str] = Field(default_factory=list)
+    depth: int = 0
+    root_title: str | None = None
+    parent_title: str | None = None
+    section_path: str | None = None
+    is_root_page: bool = False
+    is_index_page: bool = False
+    is_leaf_page: bool = True
+    sibling_count: int = 0
+    child_count: int = 0
+    page_role: str = "unknown"
+    parent_context_type: str | None = None
+    ancestor_context_types: list[str] = Field(default_factory=list)
+
+
 class CandidateFact(BaseModel):
     subject: str
     predicate: str
@@ -238,6 +254,7 @@ class Enrichment(FlexibleModel):
     document_type: str
     document_type_confidence: float = Field(ge=0, le=1)
     document_subtype: str | None = None
+    hierarchy: HierarchyContext = Field(default_factory=HierarchyContext)
     short_summary: str
     detailed_summary: str
     key_facts: list[KeyFact] = Field(default_factory=list)
@@ -302,6 +319,14 @@ class DocumentIndexRow(PageScopedArtifact):
     heading_count: int = 0
     text_simhash: str | None = None
     heading_simhash: str | None = None
+    hierarchy_depth: int = 0
+    parent_title: str | None = None
+    root_title: str | None = None
+    section_path: str | None = None
+    page_role: str = "unknown"
+    parent_context_type: str | None = None
+    sibling_count: int = 0
+    child_count: int = 0
 
 
 class QualityScoreRow(PageScopedArtifact):
