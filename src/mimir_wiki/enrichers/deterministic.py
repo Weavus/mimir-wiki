@@ -738,6 +738,20 @@ def missing_content_review_flags(
     return sorted(flags)
 
 
+def usability_review_flags(bundle: PageBundle) -> list[str]:
+    long_table_rows = [
+        line
+        for line in bundle.clean_markdown.splitlines()
+        if line.lstrip().startswith("|") and len(line) > 1200
+    ]
+    if not long_table_rows:
+        return []
+    flags = {"source_contains_oversized_table_rows", "manual_review_required"}
+    if len(long_table_rows) >= 3:
+        flags.add("table_rendering_review_recommended")
+    return sorted(flags)
+
+
 def is_high_value_attachment(name: str) -> bool:
     lowered = name.lower().split("?", 1)[0]
     return any(lowered.endswith(suffix) for suffix in HIGH_VALUE_ATTACHMENT_SUFFIXES)
@@ -957,6 +971,7 @@ def enrich_page(
         set(sensitivity_review_flags(bundle))
         | set(trust_review_flags(bundle, document_type, document_subtype))
         | set(missing_content_review_flags(bundle, document_type, document_subtype))
+        | set(usability_review_flags(bundle))
     )
     for flag in review_flags:
         if flag not in warnings:

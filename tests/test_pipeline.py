@@ -164,6 +164,17 @@ def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path:
             "target_title": None,
         }
     )
+    links["links"].append(
+        {
+            "type": "anchor",
+            "href": "#local-heading",
+            "text": "Local Heading",
+            "crawlable": False,
+            "target_page_id": None,
+            "target_space_key": None,
+            "target_title": None,
+        }
+    )
     links_path.write_text(json.dumps(links), encoding="utf-8")
     config = load_config(
         cli_overrides={
@@ -184,9 +195,40 @@ def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path:
     assert early_links.count("https://example.com/runbook-") == 8
     assert "## Additional Source Links" in content
     assert "mailto:test@example.com" in content.split("## Additional Source Links", maxsplit=1)[1]
+    assert "#local-heading" not in content
     assert "Image omitted from source export: Architecture" in content
     enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
     assert "visual_content_missing" in enrichment["review_flags"]
+
+
+def test_oversized_table_rows_get_usability_review_flags(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    long_cell = "step " * 260
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + f"\n| Scenario | Investigation |\n| --- | --- |\n| Long row | {long_cell} |\n",
+        encoding="utf-8",
+    )
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text(text_path.read_text(encoding="utf-8") + " Long table row.", encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert "source_contains_oversized_table_rows" in enrichment["review_flags"]
+    assert "manual_review_required" in enrichment["review_flags"]
 
 
 def test_linked_failover_procedure_suppresses_missing_backout_warning(

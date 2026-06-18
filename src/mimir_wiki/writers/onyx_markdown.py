@@ -399,6 +399,8 @@ def render_source_links(bundle: PageBundle, *, limit: int, include_low_value: bo
         href = link.href or ""
         if not href or href in seen:
             continue
+        if is_relative_anchor_href(href):
+            continue
         if not include_low_value and is_low_value_source_link(link.text or "", href):
             continue
         seen.add(href)
@@ -438,7 +440,7 @@ def source_link_rank(link: object) -> tuple[int, str]:
 
 def is_low_value_source_link(text: str, href: str) -> bool:
     lower = f"{text} {href}".lower()
-    if href.startswith("mailto:"):
+    if href.startswith("mailto:") or is_relative_anchor_href(href):
         return True
     return any(
         marker in lower
@@ -451,6 +453,10 @@ def is_low_value_source_link(text: str, href: str) -> bool:
             "stream.aspx",
         )
     )
+
+
+def is_relative_anchor_href(href: str) -> bool:
+    return href.startswith("#")
 
 
 def rewrite_source_images(markdown: str) -> str:
