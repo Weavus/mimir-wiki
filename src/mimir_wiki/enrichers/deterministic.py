@@ -247,6 +247,15 @@ def classify_document(bundle: PageBundle) -> tuple[str, float]:
             bundle.text[:5000],
         ]
     ).lower()
+    title = bundle.metadata.title.lower()
+    if "open questions" in title or "questions log" in title:
+        return "reference", 0.9
+    if "scenario catalog" in title:
+        return "reference", 0.9
+    if "choosing an entra integration path" in title or re.match(r"tier [123]:", title):
+        return "onboarding", 0.88
+    if title.endswith("monitor") or "provisioning and deprovisioning monitor" in title:
+        return "reference", 0.85
     scores: Counter[str] = Counter()
     for document_type, terms in DOCUMENT_TYPE_RULES:
         for term in terms:
@@ -869,6 +878,11 @@ def infer_document_subtype(bundle: PageBundle, document_type: str) -> str | None
     text = f"{bundle.metadata.title}\n{' '.join(bundle.ancestor_titles)}".lower()
     subtype_rules = [
         ("database_information", ("database information",)),
+        ("operational_monitor", ("provisioning and deprovisioning monitor", "operational monitor")),
+        ("integration_path", ("integration path", "tier 1:", "tier 2:", "tier 3:")),
+        ("question_log", ("open questions", "questions log", "question log")),
+        ("scenario_catalog", ("scenario catalog",)),
+        ("decision_guide", ("choosing an entra integration path", "decision framework")),
         ("rollback_procedure", ("rollback procedure", "rollback procedures")),
         ("failover_procedure", ("failover",)),
         ("disaster_recovery", ("disaster recovery", " dr ", "test standard and dr")),
@@ -896,8 +910,12 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
     if not document_subtype:
         return document_type
     strong_subtype_type_map = {
+        "integration_path": "onboarding",
+        "operational_monitor": "reference",
         "performance_test_report": "reference",
+        "question_log": "reference",
         "release_report": "change_record",
+        "scenario_catalog": "reference",
     }
     if document_subtype in strong_subtype_type_map:
         return strong_subtype_type_map[document_subtype]
@@ -908,8 +926,12 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
         "business_overview": "reference",
         "database_information": "reference",
         "faq": "knowledge_article",
+        "integration_path": "onboarding",
+        "operational_monitor": "reference",
         "performance_test_report": "reference",
+        "question_log": "reference",
         "release_report": "change_record",
+        "scenario_catalog": "reference",
         "technical_document": "reference",
         "technical_design": "design",
     }
