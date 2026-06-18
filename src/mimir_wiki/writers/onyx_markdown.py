@@ -185,7 +185,8 @@ Space: {enrichment.space_key}
 Source updated at: {enrichment.source_updated_at or "unknown"}
 Source content hash: {enrichment.source_content_hash}
 Source URL: {bundle.metadata.url or "unknown"}
-Attachment count: {len(bundle.attachment_names)}
+Attachment count: {bundle.attachment_reference_count}
+Missing attachment content count: {len(bundle.missing_attachment_names)}
 Hierarchy depth: {enrichment.hierarchy.depth}
 Parent section: {enrichment.hierarchy.parent_title or "none"}
 Page role: {enrichment.hierarchy.page_role}
@@ -283,8 +284,8 @@ def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
         facts.append("- Dependency signal: present")
     if enrichment.operational_signals.has_recovery_steps:
         facts.append("- Recovery/failover signal: present")
-    if bundle.attachment_names:
-        facts.append(f"- Attachments: {', '.join(bundle.attachment_names[:10])}")
+    if bundle.attachment_reference_names:
+        facts.append(f"- Attachments: {', '.join(bundle.attachment_reference_names[:10])}")
     return "\n".join(facts) if facts else "- none"
 
 

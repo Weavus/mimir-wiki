@@ -70,7 +70,7 @@ def document_index_row(
         labels=bundle.metadata.labels,
         ancestor_titles=bundle.ancestor_titles,
         outbound_link_count=len(bundle.links.links),
-        attachment_count=len(bundle.attachment_names),
+        attachment_count=bundle.attachment_reference_count,
         word_count=len(bundle.text.split()),
         heading_count=len(enrichment.headings),
         text_simhash=simhash64(bundle.text),

@@ -146,6 +146,19 @@ INTERNAL_EMAIL_DOMAINS = (
     "thomsonreuters.com",
 )
 MONTH_NAMES = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
+HIGH_VALUE_ATTACHMENT_SUFFIXES = {
+    ".bat",
+    ".csv",
+    ".json",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+    ".yaml",
+    ".yml",
+    ".zip",
+}
 
 DOCUMENT_TYPE_RULES: list[tuple[str, list[str]]] = [
     ("archive", ["archive", "archived", "obsolete", "deprecated", "retired"]),
@@ -705,6 +718,31 @@ def trust_review_flags(bundle: PageBundle, document_type: str, document_subtype:
     return sorted(flags)
 
 
+def missing_content_review_flags(
+    bundle: PageBundle, document_type: str, document_subtype: str | None
+) -> list[str]:
+    flags: set[str] = set()
+    image_count = len(re.findall(r"!\[[^\]]*\]\([^)]+\)", bundle.clean_markdown))
+    if image_count:
+        flags.add("visual_content_missing")
+    if image_count >= 3 or (image_count and word_count(bundle.text) < 150):
+        flags.update({"visual_content_review_recommended", "manual_review_required"})
+    if bundle.missing_attachment_names:
+        flags.add("attachment_content_missing")
+    if bundle.missing_attachment_names and (
+        document_subtype in {"api_specification", "performance_test_report"}
+        or any(is_high_value_attachment(name) for name in bundle.missing_attachment_names)
+        or document_type in {"design", "architecture"}
+    ):
+        flags.update({"attachment_content_review_recommended", "manual_review_required"})
+    return sorted(flags)
+
+
+def is_high_value_attachment(name: str) -> bool:
+    lowered = name.lower().split("?", 1)[0]
+    return any(lowered.endswith(suffix) for suffix in HIGH_VALUE_ATTACHMENT_SUFFIXES)
+
+
 def has_future_date(text: str) -> bool:
     now = datetime.now(UTC).date()
     for match in re.finditer(
@@ -911,13 +949,14 @@ def enrich_page(
         quality_score=quality.overall_score,
         signals=signals,
         status_flags=flags,
-        attachment_count=len(bundle.attachment_names),
+        attachment_count=bundle.attachment_reference_count,
         has_linked_procedure=has_linked_procedure(bundle),
         is_procedural=is_procedural_runbook(bundle),
     )
     review_flags = sorted(
         set(sensitivity_review_flags(bundle))
         | set(trust_review_flags(bundle, document_type, document_subtype))
+        | set(missing_content_review_flags(bundle, document_type, document_subtype))
     )
     for flag in review_flags:
         if flag not in warnings:

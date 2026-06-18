@@ -185,6 +185,8 @@ def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path:
     assert "## Additional Source Links" in content
     assert "mailto:test@example.com" in content.split("## Additional Source Links", maxsplit=1)[1]
     assert "Image omitted from source export: Architecture" in content
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert "visual_content_missing" in enrichment["review_flags"]
 
 
 def test_linked_failover_procedure_suppresses_missing_backout_warning(
@@ -232,6 +234,48 @@ def test_linked_failover_procedure_suppresses_missing_backout_warning(
     enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
     assert "linked_procedure_not_expanded" in enrichment["warnings"]
     assert "missing_backout_steps" not in enrichment["warnings"]
+
+
+def test_missing_attachment_links_get_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "SCIM Admin API - Open API Specification"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    links_path = tiny_cache / "pages" / "123" / "links.json"
+    links = json.loads(links_path.read_text(encoding="utf-8"))
+    links["links"].append(
+        {
+            "type": "confluence_attachment",
+            "href": "https://confluence.example.com/download/attachments/123/swagger.yaml?api=v2",
+            "text": "swagger.yaml",
+            "crawlable": False,
+            "target_page_id": None,
+            "target_space_key": None,
+            "target_title": None,
+        }
+    )
+    links_path.write_text(json.dumps(links), encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert "attachment_content_missing" in enrichment["review_flags"]
+    assert "attachment_content_review_recommended" in enrichment["review_flags"]
+    document_row = json.loads((tmp_path / "knowledge" / "document_index.jsonl").read_text())
+    assert document_row["attachment_count"] == 1
+    onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+    content = onyx_file.read_text(encoding="utf-8")
+    assert "Missing attachment content count: 1" in content
 
 
 def test_customer_case_content_gets_restricted_review_flags(

@@ -54,6 +54,31 @@ class PageBundle:
         return sorted(item.name for item in self.paths.attachments.iterdir() if item.is_file())
 
     @property
+    def attachment_link_names(self) -> list[str]:
+        names: list[str] = []
+        for link in self.links.links:
+            href = link.href or ""
+            if link.type != "confluence_attachment" and "/download/attachments/" not in href:
+                continue
+            name = (link.text or href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]).strip()
+            if name:
+                names.append(name)
+        return sorted(set(names))
+
+    @property
+    def missing_attachment_names(self) -> list[str]:
+        exported = set(self.attachment_names)
+        return [name for name in self.attachment_link_names if name not in exported]
+
+    @property
+    def attachment_reference_names(self) -> list[str]:
+        return sorted(set(self.attachment_names) | set(self.attachment_link_names))
+
+    @property
+    def attachment_reference_count(self) -> int:
+        return len(self.attachment_reference_names)
+
+    @property
     def ancestor_titles(self) -> list[str]:
         return [ancestor.title for ancestor in self.metadata.ancestors]
 
