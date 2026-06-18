@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import UTC, datetime
 
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
@@ -144,6 +145,7 @@ INTERNAL_EMAIL_DOMAINS = (
     "refinitiv.com",
     "thomsonreuters.com",
 )
+MONTH_NAMES = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
 
 DOCUMENT_TYPE_RULES: list[tuple[str, list[str]]] = [
     ("archive", ["archive", "archived", "obsolete", "deprecated", "retired"]),
@@ -672,6 +674,88 @@ def sensitivity_for_review_flags(review_flags: list[str]) -> str:
     return "internal"
 
 
+def trust_review_flags(bundle: PageBundle, document_type: str, document_subtype: str | None) -> list[str]:
+    title = bundle.metadata.title.lower()
+    labels = " ".join(bundle.metadata.labels).lower()
+    early_text = bundle.text[:5000].lower()
+    haystack = "\n".join([title, labels, early_text])
+    flags: set[str] = set()
+    if re.search(r"(?:^|[\[{(\s])draft(?:[\]}):\s]|$)", title) or "status draft" in haystack:
+        flags.update({"draft", "not_for_execution"})
+    if "wip" in title or "work in progress" in haystack:
+        flags.update({"wip", "not_for_execution"})
+    if "internal" in title or " internal" in labels:
+        flags.add("internal_only")
+    if any(term in haystack for term in ("to-be-modified", "to be modified", " tbd", "todo")):
+        flags.add("contains_unresolved_items")
+    if "open question" in haystack or "open points" in haystack:
+        flags.add("contains_unresolved_items")
+    if (
+        document_type == "runbook"
+        or document_subtype
+        in {"installation_guide", "rollback_procedure", "failover_procedure", "release_report"}
+        or any(term in title for term in ("installation guide", "release notes", "release report"))
+    ):
+        if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", title):
+            flags.add("versioned_operational_document")
+    if has_future_date(bundle.text):
+        flags.update({"future_dated", "not_for_execution_until_verified"})
+    if flags & {"draft", "wip", "contains_unresolved_items", "future_dated"}:
+        flags.add("manual_review_required")
+    return sorted(flags)
+
+
+def has_future_date(text: str) -> bool:
+    now = datetime.now(UTC).date()
+    for match in re.finditer(
+        rf"\b(\d{{1,2}})[\s/-]+({MONTH_NAMES})[a-z]*[\s/-]+(20\d{{2}})\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        day, month_text, year = match.groups()
+        month = month_number(month_text)
+        if month is None:
+            continue
+        try:
+            parsed = datetime(int(year), month, int(day), tzinfo=UTC).date()
+        except ValueError:
+            continue
+        if parsed > now:
+            return True
+    for match in re.finditer(
+        r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        year, month, day = match.groups()
+        try:
+            parsed = datetime(int(year), int(month), int(day), tzinfo=UTC).date()
+        except ValueError:
+            continue
+        if parsed > now:
+            return True
+    return False
+
+
+def month_number(value: str) -> int | None:
+    lookup = {
+        "jan": 1,
+        "feb": 2,
+        "mar": 3,
+        "apr": 4,
+        "may": 5,
+        "jun": 6,
+        "jul": 7,
+        "aug": 8,
+        "sep": 9,
+        "sept": 9,
+        "oct": 10,
+        "nov": 11,
+        "dec": 12,
+    }
+    return lookup.get(value[:4].lower(), lookup.get(value[:3].lower()))
+
+
 def has_linked_procedure(bundle: PageBundle) -> bool:
     if not bundle.links.links:
         return False
@@ -831,7 +915,10 @@ def enrich_page(
         has_linked_procedure=has_linked_procedure(bundle),
         is_procedural=is_procedural_runbook(bundle),
     )
-    review_flags = sensitivity_review_flags(bundle)
+    review_flags = sorted(
+        set(sensitivity_review_flags(bundle))
+        | set(trust_review_flags(bundle, document_type, document_subtype))
+    )
     for flag in review_flags:
         if flag not in warnings:
             warnings.append(flag)

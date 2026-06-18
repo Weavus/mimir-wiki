@@ -275,6 +275,49 @@ def test_customer_case_content_gets_restricted_review_flags(
     assert document_row["audience"] == "restricted_internal"
 
 
+def test_draft_future_runbook_gets_not_for_execution_flags(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "Draft [PROD] SCIM API 9.9.0 Installation Guide"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        "# Draft [PROD] SCIM API 9.9.0 Installation Guide\n\n"
+        "Change Request: to-be-modified\n\n"
+        "| Environment | Install Date |\n| --- | --- |\n| Production | 31 Dec 2099 |\n",
+        encoding="utf-8",
+    )
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text(
+        "Draft PROD SCIM API 9.9.0 Installation Guide Change Request to-be-modified "
+        "Production 31 Dec 2099",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert "draft" in enrichment["review_flags"]
+    assert "contains_unresolved_items" in enrichment["review_flags"]
+    assert "future_dated" in enrichment["review_flags"]
+    assert "manual_review_required" in enrichment["review_flags"]
+    assert "not_for_execution" in enrichment["review_flags"]
+    assert "not_for_execution_until_verified" in enrichment["review_flags"]
+    assert "versioned_operational_document" in enrichment["review_flags"]
+
+
 def test_enrich_uses_page_workers_for_multiple_pages(tiny_cache: Path, tmp_path: Path) -> None:
     page_123 = tiny_cache / "pages" / "123"
     page_456 = tiny_cache / "pages" / "456"
