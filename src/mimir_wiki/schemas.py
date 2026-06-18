@@ -133,6 +133,9 @@ class OnyxMetadata(BaseModel):
     approval_status: str = "unreviewed"
     historical: bool | None = None
     currentness: str | None = None
+    audience: str | None = None
+    sensitivity: str | None = None
+    review_flags: list[str] = Field(default_factory=list)
 
 
 class OperationalSignals(BaseModel):
@@ -268,6 +271,9 @@ class Enrichment(FlexibleModel):
     quality: Quality
     quality_band: str
     warnings: list[str] = Field(default_factory=list)
+    review_flags: list[str] = Field(default_factory=list)
+    audience: str = "internal"
+    sensitivity: str = "internal"
     candidate_facts: list[CandidateFact] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     historical: bool = False
@@ -311,6 +317,9 @@ class DocumentIndexRow(PageScopedArtifact):
     document_type: str
     document_type_confidence: float = Field(ge=0, le=1)
     status_flags: list[str] = Field(default_factory=list)
+    review_flags: list[str] = Field(default_factory=list)
+    audience: str = "internal"
+    sensitivity: str = "internal"
     labels: list[str] = Field(default_factory=list)
     ancestor_titles: list[str] = Field(default_factory=list)
     outbound_link_count: int = 0

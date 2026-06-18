@@ -138,6 +138,12 @@ GENERIC_TAXONOMY_TERMS = GENERIC_ENTITY_TERMS | {
     "verify",
 }
 SHORT_TAXONOMY_ALLOWLIST = {"dev", "qa", "ppe", "prod", "k6", "uat", "dr"}
+EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+INTERNAL_EMAIL_DOMAINS = (
+    "lseg.com",
+    "refinitiv.com",
+    "thomsonreuters.com",
+)
 
 DOCUMENT_TYPE_RULES: list[tuple[str, list[str]]] = [
     ("archive", ["archive", "archived", "obsolete", "deprecated", "retired"]),
@@ -601,6 +607,71 @@ def warnings_for(
     return warnings
 
 
+def sensitivity_review_flags(bundle: PageBundle) -> list[str]:
+    text = "\n".join(
+        [
+            bundle.metadata.title,
+            " ".join(bundle.metadata.labels),
+            bundle.text,
+            " ".join(link.href or "" for link in bundle.links.links),
+        ]
+    )
+    lowered = text.lower()
+    flags: set[str] = set()
+    emails = EMAIL_PATTERN.findall(text)
+    if emails:
+        flags.add("contains_email_addresses")
+    if any(not email.lower().endswith(INTERNAL_EMAIL_DOMAINS) for email in emails):
+        flags.add("contains_customer_emails")
+    if re.search(r"\bGE(?:DTC|US\d*)?-[A-Z0-9]{4,}\b", text):
+        flags.add("contains_person_identifiers")
+    if any(marker in lowered for marker in ("datadog", "cloudwatch", "log explorer")):
+        flags.add("contains_log_links")
+    if any(
+        marker in lowered
+        for marker in (
+            "customer case",
+            "customer support",
+            "bain",
+            "kpmg",
+            "client",
+            "user portfolio",
+        )
+    ) and (
+        "contains_customer_emails" in flags
+        or "contains_person_identifiers" in flags
+        or "contains_log_links" in flags
+    ):
+        flags.add("contains_customer_case_data")
+    if any(
+        flag in flags
+        for flag in (
+            "contains_customer_emails",
+            "contains_person_identifiers",
+            "contains_customer_case_data",
+        )
+    ):
+        flags.add("requires_restricted_audience")
+    return sorted(flags)
+
+
+def audience_for_review_flags(review_flags: list[str]) -> str:
+    if "requires_restricted_audience" in review_flags:
+        return "restricted_internal"
+    return "internal"
+
+
+def sensitivity_for_review_flags(review_flags: list[str]) -> str:
+    if "contains_customer_case_data" in review_flags:
+        return "customer_confidential"
+    if any(
+        flag in review_flags
+        for flag in ("contains_customer_emails", "contains_person_identifiers")
+    ):
+        return "restricted"
+    return "internal"
+
+
 def has_linked_procedure(bundle: PageBundle) -> bool:
     if not bundle.links.links:
         return False
@@ -760,6 +831,12 @@ def enrich_page(
         has_linked_procedure=has_linked_procedure(bundle),
         is_procedural=is_procedural_runbook(bundle),
     )
+    review_flags = sensitivity_review_flags(bundle)
+    for flag in review_flags:
+        if flag not in warnings:
+            warnings.append(flag)
+    audience = audience_for_review_flags(review_flags)
+    sensitivity = sensitivity_for_review_flags(review_flags)
     onyx = OnyxMetadata(
         link=bundle.metadata.url or "",
         file_display_name=bundle.metadata.title,
@@ -773,6 +850,9 @@ def enrich_page(
         historical=historical,
         currentness=current,
         document_subtype=document_subtype,
+        audience=audience,
+        sensitivity=sensitivity,
+        review_flags=review_flags,
     )
     return Enrichment(
         run_id=run_id,
@@ -801,6 +881,9 @@ def enrich_page(
         quality=quality,
         quality_band=band,
         warnings=warnings,
+        review_flags=review_flags,
+        audience=audience,
+        sensitivity=sensitivity,
         candidate_facts=facts,
         confidence=min(0.95, (document_type_confidence + quality.overall_score / 100) / 2),
         historical=historical,

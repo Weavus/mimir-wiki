@@ -234,6 +234,47 @@ def test_linked_failover_procedure_suppresses_missing_backout_warning(
     assert "missing_backout_steps" not in enrichment["warnings"]
 
 
+def test_customer_case_content_gets_restricted_review_flags(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\nBain user jane.customer@bain.com (GEDTC-1107515) failed in DataDog logs.\n",
+        encoding="utf-8",
+    )
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text(
+        text_path.read_text(encoding="utf-8")
+        + " Bain user jane.customer@bain.com GEDTC-1107515 failed in DataDog logs.",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["audience"] == "restricted_internal"
+    assert enrichment["sensitivity"] == "customer_confidential"
+    assert "contains_customer_case_data" in enrichment["review_flags"]
+    assert "requires_restricted_audience" in enrichment["review_flags"]
+    onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+    metadata = json.loads(onyx_file.read_text(encoding="utf-8").splitlines()[0].split("=", 1)[1])
+    assert metadata["audience"] == "restricted_internal"
+    assert metadata["sensitivity"] == "customer_confidential"
+    document_row = json.loads((tmp_path / "knowledge" / "document_index.jsonl").read_text())
+    assert document_row["audience"] == "restricted_internal"
+
+
 def test_enrich_uses_page_workers_for_multiple_pages(tiny_cache: Path, tmp_path: Path) -> None:
     page_123 = tiny_cache / "pages" / "123"
     page_456 = tiny_cache / "pages" / "456"

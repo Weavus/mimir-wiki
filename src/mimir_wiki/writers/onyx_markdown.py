@@ -101,6 +101,7 @@ def render_markdown(
         or "- none"
     )
     warning_lines = "\n".join(f"- {warning}" for warning in enrichment.warnings) or "- none"
+    review_flag_lines = "\n".join(f"- {flag}" for flag in enrichment.review_flags) or "- none"
     warning_heading = (
         "Operational Gaps"
         if enrichment.document_type in {"runbook", "support_model"}
@@ -123,6 +124,10 @@ Document type: `{enrichment.document_type}` ({enrichment.document_type_confidenc
 {document_subtype_line(enrichment)}
 Quality band: `{enrichment.quality_band}` ({enrichment.quality.overall_score}/100)
 Currentness: `{enrichment.currentness}`
+Audience: `{enrichment.audience}`
+Sensitivity: `{enrichment.sensitivity}`
+
+Review flags: `{', '.join(enrichment.review_flags) if enrichment.review_flags else 'none'}`
 
 ## Key Facts
 
@@ -161,6 +166,10 @@ Currentness: `{enrichment.currentness}`
 - Completeness: {enrichment.quality.completeness_score}
 - Operational value: {enrichment.quality.operational_value_score}
 - Ownership clarity: {enrichment.quality.ownership_clarity_score}
+
+## Review Flags
+
+{review_flag_lines}
 
 {warning_heading}:
 
