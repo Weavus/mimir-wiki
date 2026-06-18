@@ -910,6 +910,7 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
     if not document_subtype:
         return document_type
     strong_subtype_type_map = {
+        "api_specification": "reference",
         "integration_path": "onboarding",
         "operational_monitor": "reference",
         "performance_test_report": "reference",

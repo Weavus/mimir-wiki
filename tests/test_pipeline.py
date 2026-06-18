@@ -374,6 +374,8 @@ def test_missing_attachment_links_get_review_flags(tiny_cache: Path, tmp_path: P
     result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
     assert result.exit_code == 0
     enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["document_type"] == "reference"
+    assert enrichment["document_subtype"] == "api_specification"
     assert "attachment_content_missing" in enrichment["review_flags"]
     assert "attachment_content_review_recommended" in enrichment["review_flags"]
     document_row = json.loads((tmp_path / "knowledge" / "document_index.jsonl").read_text())
