@@ -774,11 +774,11 @@ def has_future_date(text: str) -> bool:
         flags=re.IGNORECASE,
     ):
         day, month_text, year = match.groups()
-        month = month_number(month_text)
-        if month is None:
+        month_num = month_number(month_text)
+        if month_num is None:
             continue
         try:
-            parsed = datetime(int(year), month, int(day), tzinfo=UTC).date()
+            parsed = datetime(int(year), month_num, int(day), tzinfo=UTC).date()
         except ValueError:
             continue
         if parsed > now:
