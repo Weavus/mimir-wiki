@@ -689,14 +689,15 @@ def sensitivity_for_review_flags(review_flags: list[str]) -> str:
     if "contains_customer_case_data" in review_flags:
         return "customer_confidential"
     if any(
-        flag in review_flags
-        for flag in ("contains_customer_emails", "contains_person_identifiers")
+        flag in review_flags for flag in ("contains_customer_emails", "contains_person_identifiers")
     ):
         return "restricted"
     return "internal"
 
 
-def trust_review_flags(bundle: PageBundle, document_type: str, document_subtype: str | None) -> list[str]:
+def trust_review_flags(
+    bundle: PageBundle, document_type: str, document_subtype: str | None
+) -> list[str]:
     title = bundle.metadata.title.lower()
     labels = " ".join(bundle.metadata.labels).lower()
     early_text = bundle.text[:5000].lower()
@@ -717,9 +718,8 @@ def trust_review_flags(bundle: PageBundle, document_type: str, document_subtype:
         or document_subtype
         in {"installation_guide", "rollback_procedure", "failover_procedure", "release_report"}
         or any(term in title for term in ("installation guide", "release notes", "release report"))
-    ):
-        if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", title):
-            flags.add("versioned_operational_document")
+    ) and re.search(r"\b\d+\.\d+(?:\.\d+)?\b", title):
+        flags.add("versioned_operational_document")
     if has_future_date(bundle.text):
         flags.update({"future_dated", "not_for_execution_until_verified"})
     if flags & {"draft", "wip", "contains_unresolved_items", "future_dated"}:

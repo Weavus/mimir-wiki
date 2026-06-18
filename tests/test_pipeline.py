@@ -264,9 +264,7 @@ def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path:
     assert "visual_content_missing" in enrichment["review_flags"]
 
 
-def test_oversized_table_rows_get_usability_review_flags(
-    tiny_cache: Path, tmp_path: Path
-) -> None:
+def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     long_cell = "step " * 260
     clean_path.write_text(
@@ -275,7 +273,9 @@ def test_oversized_table_rows_get_usability_review_flags(
         encoding="utf-8",
     )
     text_path = tiny_cache / "pages" / "123" / "text.txt"
-    text_path.write_text(text_path.read_text(encoding="utf-8") + " Long table row.", encoding="utf-8")
+    text_path.write_text(
+        text_path.read_text(encoding="utf-8") + " Long table row.", encoding="utf-8"
+    )
     config = load_config(
         cli_overrides={
             "paths": {

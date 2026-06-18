@@ -127,7 +127,7 @@ Currentness: `{enrichment.currentness}`
 Audience: `{enrichment.audience}`
 Sensitivity: `{enrichment.sensitivity}`
 
-Review flags: `{', '.join(enrichment.review_flags) if enrichment.review_flags else 'none'}`
+Review flags: `{", ".join(enrichment.review_flags) if enrichment.review_flags else "none"}`
 
 ## Key Facts
 
