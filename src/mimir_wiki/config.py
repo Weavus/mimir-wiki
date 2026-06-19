@@ -224,6 +224,14 @@ class OnyxPocConfig(BaseModel):
     metadata_policy: Literal["lean_filters", "extended_debug"] = "lean_filters"
 
 
+class VisualExtractionConfig(BaseModel):
+    enabled: bool = False
+    provider: str = "azure-ai-foundry"
+    model: str = "gpt-5.4-mini"
+    prompt_version: str = "visual-ocr-v1"
+    max_images_per_page: int = 20
+
+
 class RedactionConfig(BaseModel):
     enabled: bool = True
     action: Literal["redact", "fail", "off"] = "redact"
@@ -261,6 +269,7 @@ class AppConfig(BaseModel):
     cli: CLIConfig = Field(default_factory=CLIConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     onyx_poc: OnyxPocConfig = Field(default_factory=OnyxPocConfig)
+    visual_extraction: VisualExtractionConfig = Field(default_factory=VisualExtractionConfig)
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
     artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
 

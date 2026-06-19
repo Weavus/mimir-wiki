@@ -29,6 +29,12 @@ from mimir_wiki.schemas import (
     WarningRecord,
 )
 from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, new_run_id, utc_now
+from mimir_wiki.visual_extraction import (
+    discover_visual_sources,
+    load_visual_extraction,
+    run_extract_visuals_for_page,
+    visual_extraction_path,
+)
 from mimir_wiki.writers.artifacts import (
     aggregate_candidate_entity_rows,
     aggregate_candidate_fact_rows,
@@ -837,6 +843,126 @@ def enrich_command(
         warnings=context.warnings,
         output_paths=output_paths,
     )
+
+
+def extract_visuals_command(
+    *,
+    config: AppConfig,
+    cache_path: Path,
+    profile: str | None,
+    dry_run: bool,
+    limit: int | None = None,
+    force: bool = False,
+    space_filter: str | None = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
+    llm_transport: Any | None = None,
+) -> CommandResult:
+    reader = CacheReader(cache_path)
+    validation = reader.validate(limit=limit)
+    dataset_name = validation.dataset_name or cache_path.name
+    context = RunContext("extract-visuals", config, cache_path, dataset_name, profile, dry_run)
+    output_paths: list[Path] = []
+    if not validation.ok:
+        summary = context.build_summary(
+            status="failed",
+            exit_code=EXIT_USER_ERROR,
+            counts={
+                "pages_total": validation.pages_total,
+                "pages_considered": 0,
+                "pages_processed": 0,
+                "pages_skipped_unchanged": 0,
+                "pages_failed": validation.pages_failed,
+            },
+            output_paths=[],
+        )
+        context.write_run_artifacts(summary, event_callback)
+        return CommandResult(summary=summary)
+
+    pages = reader.iter_pages(limit=limit, space_filter=space_filter)
+    considered = 0
+    processed = 0
+    skipped = 0
+    images_discovered = 0
+    images_extracted = 0
+    images_failed = 0
+    for bundle in pages:
+        sources = discover_visual_sources(
+            bundle, max_images=config.visual_extraction.max_images_per_page
+        )
+        if not sources:
+            skipped += 1
+            continue
+        considered += 1
+        images_discovered += len(sources)
+        existing = load_visual_extraction(bundle)
+        if (
+            not force
+            and existing is not None
+            and existing.status == "complete"
+            and existing.source_content_hash == bundle.source_content_hash
+        ):
+            skipped += 1
+            images_extracted += existing.images_succeeded
+            continue
+        if dry_run:
+            processed += 1
+            continue
+        try:
+            artifact, files_written = run_extract_visuals_for_page(
+                bundle=bundle,
+                config=config,
+                run_id=context.run_id,
+                dataset_name=dataset_name,
+                generated_at=context.generated_at,
+                dry_run=False,
+                llm_transport=llm_transport,
+            )
+        except Exception as exc:
+            context.page_failure(
+                bundle=bundle,
+                stage="extract-visuals",
+                error_type=type(exc).__name__,
+                message=str(exc),
+                suggested_action=(
+                    "Check visual extraction provider credentials and source image access."
+                ),
+            )
+            images_failed += len(sources)
+            continue
+        processed += 1
+        context.files_written += files_written
+        images_extracted += artifact.images_succeeded
+        images_failed += artifact.images_failed
+        path = visual_extraction_path(bundle)
+        output_paths.append(path)
+        _artifact_event(
+            event_callback,
+            run_id=context.run_id,
+            artifact_type="visual_extraction",
+            path=path,
+            page_id=bundle.metadata.page_id,
+            space_key=bundle.metadata.space_key,
+        )
+    output_paths.sort(key=lambda path: str(path))
+    exit_code = EXIT_PARTIAL_SUCCESS if context.failures else EXIT_SUCCESS
+    status = "partial_success" if context.failures else "success"
+    summary = context.build_summary(
+        status=status,
+        exit_code=exit_code,
+        counts={
+            "pages_total": validation.pages_total,
+            "pages_considered": considered,
+            "pages_processed": processed,
+            "pages_skipped_unchanged": skipped,
+            "pages_failed": len(context.failures),
+            "visual_images_discovered": images_discovered,
+            "visual_images_extracted": images_extracted,
+            "visual_images_failed": images_failed,
+        },
+        output_paths=output_paths,
+    )
+    context.files_written += context.write_run_artifacts(summary, event_callback)
+    return CommandResult(summary=summary, failures=context.failures, output_paths=output_paths)
 
 
 def _read_document_rows(path: Path) -> list[DocumentIndexRow]:

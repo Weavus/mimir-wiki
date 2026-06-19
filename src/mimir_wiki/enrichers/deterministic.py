@@ -24,6 +24,7 @@ from mimir_wiki.utils import (
     strip_front_matter,
     word_count,
 )
+from mimir_wiki.visual_extraction import load_visual_extraction
 
 STOPWORDS = {
     "about",
@@ -733,9 +734,22 @@ def missing_content_review_flags(
     flags: set[str] = set()
     image_count = len(re.findall(r"!\[[^\]]*\]\([^)]+\)", bundle.clean_markdown))
     if image_count:
-        flags.add("visual_content_missing")
-    if image_count >= 3 or (image_count and word_count(bundle.text) < 150):
-        flags.update({"visual_content_review_recommended", "manual_review_required"})
+        visual_extraction = load_visual_extraction(bundle)
+        if visual_extraction is not None and visual_extraction.status == "complete":
+            flags.add("visual_content_extracted")
+        elif visual_extraction is not None and visual_extraction.images_succeeded:
+            flags.update(
+                {
+                    "visual_content_partially_extracted",
+                    "visual_content_missing",
+                    "visual_content_review_recommended",
+                    "manual_review_required",
+                }
+            )
+        else:
+            flags.add("visual_content_missing")
+            if image_count >= 3 or (image_count and word_count(bundle.text) < 150):
+                flags.update({"visual_content_review_recommended", "manual_review_required"})
     if bundle.missing_attachment_names:
         flags.add("attachment_content_missing")
     if bundle.missing_attachment_names and (

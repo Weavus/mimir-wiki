@@ -60,14 +60,14 @@ llm:
         - keywords
         - themes
         - concepts
-      model: gpt-5.5-mini
+      model: gpt-5.4-mini
       prompt_version: semantic-v1
     operational:
       tasks:
         - candidate_entities
         - operational_signals
         - quality_warnings
-      model: gpt-5.5-mini
+      model: gpt-5.4-mini
       prompt_version: operational-v1
   task_models:
     classification:
@@ -250,6 +250,13 @@ onyx_poc:
   metadata_field: ONYX_METADATA
   metadata_line_format: hash_prefix
   metadata_policy: lean_filters
+
+visual_extraction:
+  enabled: false
+  provider: azure-ai-foundry
+  model: gpt-5.4-mini
+  prompt_version: visual-ocr-v1
+  max_images_per_page: 20
 
 redaction:
   enabled: true

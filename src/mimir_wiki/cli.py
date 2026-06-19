@@ -17,6 +17,7 @@ from mimir_wiki.llm.probe import probe_multimodal_ocr
 from mimir_wiki.pipeline import (
     CommandResult,
     enrich_command,
+    extract_visuals_command,
     report_command,
     validate_cache_command,
 )
@@ -382,6 +383,77 @@ def enrich(
                 space_filter=space_filter,
                 event_callback=lambda event: _write_log(log_file, event),
             )
+        _write_log(
+            log_file, {"event": "command_finished", **result.summary.model_dump(mode="json")}
+        )
+        _print_result(console, result, json_output=json_output, quiet=quiet)
+        raise typer.Exit(result.exit_code)
+    except typer.Exit:
+        raise
+    except KeyboardInterrupt as exc:
+        _handle_keyboard_interrupt(console, log_file=log_file, json_output=json_output)
+        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+    except Exception as exc:
+        _write_log(
+            log_file,
+            {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
+        )
+        _handle_exception(console, exc, verbose=verbose, json_output=json_output)
+        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+
+
+@app.command("extract-visuals")
+def extract_visuals(
+    config_path: ConfigOption = None,
+    profile: ProfileOption = None,
+    cache: CacheOption = Path("cache"),
+    provider: ProviderOption = "azure-ai-foundry",
+    model: Annotated[
+        str, typer.Option("--model", help="Multimodal model/deployment for visual OCR")
+    ] = "gpt-5.4-mini",
+    limit: LimitOption = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Re-extract existing visual artifacts")
+    ] = False,
+    space_filter: Annotated[
+        str | None, typer.Option("--space-filter", help="Only process a space key")
+    ] = None,
+    dry_run: DryRunOption = False,
+    json_output: JsonOption = False,
+    no_color: NoColorOption = False,
+    quiet: QuietOption = False,
+    verbose: VerboseOption = False,
+    log_file: Annotated[Path | None, typer.Option("--log-file", help="Write JSONL logs")] = None,
+) -> None:
+    console = _console(no_color=no_color, quiet=quiet, json_output=json_output)
+    try:
+        config = _load_runtime_config(
+            config_path=config_path,
+            profile=profile,
+            cache=cache,
+            out=None,
+            provider=provider,
+            enable_llm=True,
+            llm_tasks=None,
+            emit_onyx_markdown=None,
+            include_source_content=None,
+            redaction=None,
+        )
+        data = config.model_dump(mode="python")
+        data["visual_extraction"]["enabled"] = True
+        data["visual_extraction"]["provider"] = provider or data["visual_extraction"]["provider"]
+        data["visual_extraction"]["model"] = model
+        config = AppConfig.model_validate(data)
+        result = extract_visuals_command(
+            config=config,
+            cache_path=cache,
+            profile=profile,
+            dry_run=dry_run,
+            limit=limit,
+            force=force,
+            space_filter=space_filter,
+            event_callback=lambda event: _write_log(log_file, event),
+        )
         _write_log(
             log_file, {"event": "command_finished", **result.summary.model_dump(mode="json")}
         )

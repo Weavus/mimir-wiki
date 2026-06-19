@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 from pathlib import Path
 
+import httpx
+
 import mimir_wiki.pipeline as pipeline
 from mimir_wiki.config import load_config
-from mimir_wiki.pipeline import enrich_command, validate_cache_command
+from mimir_wiki.llm.probe import generate_probe_png
+from mimir_wiki.pipeline import enrich_command, extract_visuals_command, validate_cache_command
 
 
 def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: Path) -> None:
@@ -262,6 +266,184 @@ def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path:
     assert "Image omitted from source export: Architecture" in content
     enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
     assert "visual_content_missing" in enrichment["review_flags"]
+
+
+def test_extract_visuals_writes_artifact_and_enrichment_marks_extracted(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    image_data = base64.b64encode(generate_probe_png()).decode("ascii")
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + f"\n![Probe](data:image/png;base64,{image_data})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["model"] == "gpt-5.4-mini"
+        assert payload["input"][0]["content"][1]["type"] == "input_image"
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5.4-mini",
+                "output_text": json.dumps(
+                    {
+                        "ocr_text": "MIMIR 42",
+                        "caption": "Probe image containing MIMIR 42.",
+                        "confidence": 0.99,
+                    }
+                ),
+            },
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {
+                "provider": "azure-ai-foundry",
+                "model": "gpt-5.4-mini",
+            },
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+    assert result.exit_code == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert artifact["status"] == "complete"
+    assert artifact["model"] == "gpt-5.4-mini"
+    assert artifact["images_succeeded"] == 1
+    assert artifact["images"][0]["ocr_text"] == "MIMIR 42"
+
+    enrich_result = enrich_command(
+        config=config, cache_path=tiny_cache, profile=None, dry_run=False
+    )
+    assert enrich_result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert "visual_content_extracted" in enrichment["review_flags"]
+    assert "visual_content_missing" not in enrichment["review_flags"]
+    onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+    content = onyx_file.read_text(encoding="utf-8")
+    assert "## Extracted Visual Content" in content
+    assert "MIMIR 42" in content
+
+
+def test_extract_visuals_resolves_urls_to_local_attachments(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    attachment_path = tiny_cache / "pages" / "123" / "attachments" / "diagram.png"
+    attachment_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![Diagram](https://confluence.example.com/download/attachments/123/diagram.png?api=v2)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["input"][0]["content"][1]["image_url"].startswith("data:image/png")
+        return httpx.Response(
+            200,
+            json={"output_text": json.dumps({"ocr_text": "LOCAL IMAGE", "caption": "Local"})},
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+    assert result.exit_code == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert calls == 1
+    assert artifact["status"] == "complete"
+    assert artifact["images"][0]["source"] == str(attachment_path)
+    assert artifact["images"][0]["source_kind"] == "file"
+
+
+def test_extract_visuals_skips_remote_images_not_in_cache(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![Missing](https://confluence.example.com/download/attachments/123/missing.png?api=v2)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("mimir-wiki must not fetch or send remote-only image references")
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+    assert result.exit_code == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert artifact["status"] == "skipped"
+    assert artifact["images"][0]["status"] == "skipped"
+    assert artifact["images"][0]["error_type"] == "remote_source_not_in_cache"
 
 
 def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:

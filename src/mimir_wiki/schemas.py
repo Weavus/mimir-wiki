@@ -309,6 +309,37 @@ class PageScopedArtifact(CommonArtifact):
     source_content_hash: str
 
 
+class VisualExtractionImage(FlexibleModel):
+    image_id: str
+    source: str
+    source_kind: Literal["data_url", "file", "url"]
+    mime_type: str | None = None
+    content_sha256: str | None = None
+    status: Literal["success", "skipped", "failed"]
+    ocr_text: str = ""
+    caption: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    error_type: str | None = None
+    error: str | None = None
+
+
+class VisualExtractionArtifact(PageScopedArtifact):
+    extracted_at: str
+    status: Literal["complete", "partial", "failed", "skipped"]
+    method: str = "multimodal_ocr"
+    provider: str
+    model: str
+    prompt_version: str = "visual-ocr-v1"
+    image_count: int = 0
+    images_succeeded: int = 0
+    images_failed: int = 0
+    images_skipped: int = 0
+    images: list[VisualExtractionImage] = Field(default_factory=list)
+
+
 class DocumentIndexRow(PageScopedArtifact):
     title: str
     url: str | None = None

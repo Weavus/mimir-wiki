@@ -7,6 +7,7 @@ from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
 from mimir_wiki.schemas import CandidateEntity, Enrichment, WarningRecord
 from mimir_wiki.utils import atomic_write_text, json_dumps, slugify, strip_front_matter
+from mimir_wiki.visual_extraction import load_visual_extraction
 
 SECRET_PATTERNS = {
     "aws_access_key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -107,6 +108,7 @@ def render_markdown(
         if enrichment.document_type in {"runbook", "support_model"}
         else "Documentation Quality Notes"
     )
+    visual_section = render_visual_extraction(bundle)
     source_section = f"\n## Source Content\n\n{source}\n" if include_source_content else ""
     body = f"""
 
@@ -138,6 +140,8 @@ Review flags: `{", ".join(enrichment.review_flags) if enrichment.review_flags el
 {source_link_lines}
 
 {source_section}
+
+{visual_section}
 
 {additional_source_link_lines}
 
@@ -193,6 +197,42 @@ Page role: {enrichment.hierarchy.page_role}
 Section path: {enrichment.hierarchy.section_path or "unknown"}
 """
     return first_line + body, truncation_warnings
+
+
+def render_visual_extraction(bundle: PageBundle) -> str:
+    artifact = load_visual_extraction(bundle)
+    if artifact is None or artifact.images_succeeded == 0:
+        return ""
+    lines = [
+        "## Extracted Visual Content",
+        "",
+        (
+            "Source-derived OCR/caption extraction from visual source artifacts. "
+            "Use as evidence, not approved curated knowledge."
+        ),
+        "",
+        f"Extraction status: `{artifact.status}`",
+        f"Provider/model: `{artifact.provider}` / `{artifact.model}`",
+        "",
+    ]
+    for image in artifact.images:
+        if image.status != "success":
+            continue
+        lines.append(f"### {image.image_id}")
+        lines.append("")
+        lines.append(f"Source: {image.source}")
+        if image.caption:
+            lines.append("")
+            lines.append(f"Caption: {image.caption}")
+        if image.ocr_text:
+            lines.append("")
+            lines.append("OCR text:")
+            lines.append("")
+            lines.append("```text")
+            lines.append(image.ocr_text[:5000])
+            lines.append("```")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def display_candidate_entities(entities: list[CandidateEntity]) -> list[CandidateEntity]:
