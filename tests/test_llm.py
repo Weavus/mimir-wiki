@@ -5,7 +5,7 @@ import json
 
 import httpx
 
-from mimir_wiki.config import LLMConfig
+from mimir_wiki.config import AppConfig, LLMConfig
 from mimir_wiki.llm.base import (
     ChatCompletionProvider,
     ContextLengthError,
@@ -15,6 +15,7 @@ from mimir_wiki.llm.base import (
     RateLimitedLLMClient,
     ResponsesProvider,
 )
+from mimir_wiki.llm.probe import generate_probe_png, probe_multimodal_ocr
 
 
 class FlakyProvider:
@@ -240,3 +241,90 @@ def test_responses_provider_posts_model_and_extracts_output_text() -> None:
     assert response.output_tokens == 5
     assert requests[0]["model"] == "gpt-5.5"
     assert "hello" in requests[0]["input"]
+
+
+async def _probe_with_responses_transport() -> tuple[dict, list[dict]]:
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        requests.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5.5-mini",
+                "output_text": '{"image_text":"MIMIR 42"}',
+                "usage": {"input_tokens": 100, "output_tokens": 8},
+            },
+        )
+
+    config = AppConfig.model_validate(
+        {
+            "llm": {
+                "provider": "azure-ai-foundry",
+                "model": "gpt-5.5-mini",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "TEST_FOUNDRY_DEPLOYMENT",
+                },
+            }
+        }
+    )
+    result = await probe_multimodal_ocr(config, transport=httpx.MockTransport(handler))
+    return result, requests
+
+
+def test_probe_multimodal_ocr_uses_responses_image_input(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+    monkeypatch.setenv("TEST_FOUNDRY_DEPLOYMENT", "gpt-5.5-mini")
+    result, requests = asyncio.run(_probe_with_responses_transport())
+    assert result["status"] == "ok"
+    assert result["image_input_accepted"] is True
+    assert result["ocr_text_matched"] is True
+    content = requests[0]["input"][0]["content"]
+    assert content[0]["type"] == "input_text"
+    assert content[1]["type"] == "input_image"
+    assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+
+async def _probe_with_chat_transport() -> tuple[dict, list[dict]]:
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        requests.append(payload)
+        return httpx.Response(
+            400,
+            text="image input is not supported by this model",
+        )
+
+    config = AppConfig.model_validate(
+        {
+            "llm": {
+                "provider": "openai-compatible",
+                "model": "text-only",
+                "openai_compatible": {
+                    "base_url_env": "TEST_OPENAI_COMPAT_BASE",
+                    "api_key_env": "TEST_OPENAI_COMPAT_KEY",
+                },
+            }
+        }
+    )
+    result = await probe_multimodal_ocr(config, transport=httpx.MockTransport(handler))
+    return result, requests
+
+
+def test_probe_multimodal_ocr_reports_unsupported_chat_image_input(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_OPENAI_COMPAT_BASE", "https://example.test")
+    monkeypatch.setenv("TEST_OPENAI_COMPAT_KEY", "test-key")
+    result, requests = asyncio.run(_probe_with_chat_transport())
+    assert result["status"] == "unsupported_or_failed"
+    assert result["error_type"] == "image_input_unsupported"
+    content = requests[0]["messages"][0]["content"]
+    assert content[1]["type"] == "image_url"
+
+
+def test_probe_png_is_valid_png() -> None:
+    assert generate_probe_png().startswith(b"\x89PNG\r\n\x1a\n")

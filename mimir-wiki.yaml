@@ -60,14 +60,14 @@ llm:
         - keywords
         - themes
         - concepts
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: semantic-v1
     operational:
       tasks:
         - candidate_entities
         - operational_signals
         - quality_warnings
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: operational-v1
   task_models:
     classification:

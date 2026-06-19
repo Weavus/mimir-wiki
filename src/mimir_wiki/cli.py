@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import traceback
 from pathlib import Path
 from threading import Lock
@@ -11,7 +12,8 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from rich.table import Table
 
 from mimir_wiki.config import AppConfig, apply_runtime_overrides, load_config
-from mimir_wiki.constants import EXIT_RUNTIME_ERROR
+from mimir_wiki.constants import EXIT_RUNTIME_ERROR, EXIT_SUCCESS
+from mimir_wiki.llm.probe import probe_multimodal_ocr
 from mimir_wiki.pipeline import (
     CommandResult,
     enrich_command,
@@ -470,6 +472,73 @@ def report(
             log_file,
             {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
         )
+        _handle_exception(console, exc, verbose=verbose, json_output=json_output)
+        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+
+
+@app.command("probe-ocr")
+def probe_ocr(
+    config_path: ConfigOption = None,
+    profile: ProfileOption = None,
+    provider: ProviderOption = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Model or deployment to probe")
+    ] = None,
+    json_output: JsonOption = False,
+    no_color: NoColorOption = False,
+    quiet: QuietOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Probe whether the configured model accepts image input and can OCR a tiny PNG."""
+    console = _console(no_color=no_color, quiet=quiet, json_output=json_output)
+    try:
+        overrides = apply_runtime_overrides(
+            provider=provider,
+            enable_llm=True,
+            llm_tasks=None,
+            emit_onyx_markdown=None,
+            include_source_content=None,
+            redaction=None,
+            cache=None,
+            out=None,
+            onyx_out=None,
+            reports_out=None,
+        )
+        if model:
+            llm_overrides = overrides.setdefault("llm", {})
+            llm_overrides["model"] = model
+            llm_overrides.setdefault("azure_openai", {})["deployment_env"] = ""
+            llm_overrides.setdefault("azure_ai_foundry", {})["deployment_env"] = ""
+            llm_overrides.setdefault("openai_compatible", {})["model_env"] = ""
+        config = load_config(config_path=config_path, profile=profile, cli_overrides=overrides)
+        result = asyncio.run(probe_multimodal_ocr(config))
+        if json_output:
+            typer.echo(json_dumps(result, pretty=True))
+        elif not quiet:
+            table = Table(title="mimir-wiki probe-ocr")
+            table.add_column("Field")
+            table.add_column("Value")
+            for key in (
+                "status",
+                "provider",
+                "model",
+                "api_kind",
+                "status_code",
+                "image_input_accepted",
+                "ocr_text_matched",
+                "expected_text",
+                "response_text",
+                "error_type",
+                "error",
+            ):
+                if key in result:
+                    table.add_row(key, str(result[key]))
+            console.print(table)
+        exit_code = EXIT_SUCCESS if result.get("ocr_text_matched") is True else EXIT_RUNTIME_ERROR
+        raise typer.Exit(exit_code)
+    except typer.Exit:
+        raise
+    except Exception as exc:
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
         raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
 
