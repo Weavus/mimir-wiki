@@ -446,6 +446,37 @@ def test_extract_visuals_skips_remote_images_not_in_cache(
     assert artifact["images"][0]["error_type"] == "remote_source_not_in_cache"
 
 
+def test_extract_visuals_emits_progress_snapshots(tiny_cache: Path, tmp_path: Path) -> None:
+    image_data = base64.b64encode(generate_probe_png()).decode("ascii")
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + f"\n![Probe](data:image/png;base64,{image_data})\n",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+        }
+    )
+    snapshots: list[dict[str, object]] = []
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=True,
+        progress_callback=snapshots.append,
+    )
+    assert result.exit_code == 0
+    assert snapshots
+    assert snapshots[-1]["current_status"] == "done"
+    assert snapshots[-1]["scanned"] == 1
+    assert snapshots[-1]["considered"] == 1
+    assert snapshots[-1]["processed"] == 1
+    assert snapshots[-1]["images_discovered"] == 1
+
+
 def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     long_cell = "step " * 260

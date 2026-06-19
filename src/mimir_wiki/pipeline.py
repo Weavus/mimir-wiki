@@ -854,6 +854,7 @@ def extract_visuals_command(
     limit: int | None = None,
     force: bool = False,
     space_filter: str | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     llm_transport: Any | None = None,
 ) -> CommandResult:
@@ -879,18 +880,53 @@ def extract_visuals_command(
         return CommandResult(summary=summary)
 
     pages = reader.iter_pages(limit=limit, space_filter=space_filter)
+    scanned = 0
     considered = 0
     processed = 0
     skipped = 0
     images_discovered = 0
     images_extracted = 0
     images_failed = 0
+    images_skipped = 0
+
+    def emit_progress(
+        *,
+        current_page: str = "-",
+        current_image: str = "-",
+        current_status: str = "-",
+    ) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "total": len(pages),
+                "scanned": scanned,
+                "considered": considered,
+                "processed": processed,
+                "skipped": skipped,
+                "failed": len(context.failures),
+                "images_discovered": images_discovered,
+                "images_extracted": images_extracted,
+                "images_failed": images_failed,
+                "images_skipped": images_skipped,
+                "current_page": current_page,
+                "current_image": current_image,
+                "current_status": current_status,
+            }
+        )
+
+    emit_progress(current_status="starting")
+
     for bundle in pages:
+        scanned += 1
+        current_page = bundle.metadata.page_id
+        emit_progress(current_page=current_page, current_status="discovering")
         sources = discover_visual_sources(
             bundle, max_images=config.visual_extraction.max_images_per_page
         )
         if not sources:
             skipped += 1
+            emit_progress(current_page=current_page, current_status="no_images")
             continue
         considered += 1
         images_discovered += len(sources)
@@ -903,10 +939,22 @@ def extract_visuals_command(
         ):
             skipped += 1
             images_extracted += existing.images_succeeded
+            emit_progress(current_page=current_page, current_status="skipped_complete")
             continue
         if dry_run:
             processed += 1
+            emit_progress(current_page=current_page, current_status="planned")
             continue
+
+        def image_progress_callback(event: dict[str, Any], *, page_id: str = current_page) -> None:
+            status = str(event.get("event") or "visual_image")
+            image_id = str(event.get("image_id") or "-")
+            emit_progress(
+                current_page=page_id,
+                current_image=image_id,
+                current_status=status,
+            )
+
         try:
             artifact, files_written = run_extract_visuals_for_page(
                 bundle=bundle,
@@ -916,6 +964,7 @@ def extract_visuals_command(
                 generated_at=context.generated_at,
                 dry_run=False,
                 llm_transport=llm_transport,
+                progress_callback=image_progress_callback,
             )
         except Exception as exc:
             context.page_failure(
@@ -928,11 +977,13 @@ def extract_visuals_command(
                 ),
             )
             images_failed += len(sources)
+            emit_progress(current_page=current_page, current_status="failed")
             continue
         processed += 1
         context.files_written += files_written
         images_extracted += artifact.images_succeeded
         images_failed += artifact.images_failed
+        images_skipped += artifact.images_skipped
         path = visual_extraction_path(bundle)
         output_paths.append(path)
         _artifact_event(
@@ -943,6 +994,8 @@ def extract_visuals_command(
             page_id=bundle.metadata.page_id,
             space_key=bundle.metadata.space_key,
         )
+        emit_progress(current_page=current_page, current_status=artifact.status)
+    emit_progress(current_status="done")
     output_paths.sort(key=lambda path: str(path))
     exit_code = EXIT_PARTIAL_SUCCESS if context.failures else EXIT_SUCCESS
     status = "partial_success" if context.failures else "success"
@@ -958,6 +1011,7 @@ def extract_visuals_command(
             "visual_images_discovered": images_discovered,
             "visual_images_extracted": images_extracted,
             "visual_images_failed": images_failed,
+            "visual_images_skipped": images_skipped,
         },
         output_paths=output_paths,
     )

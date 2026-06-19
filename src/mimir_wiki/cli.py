@@ -444,16 +444,84 @@ def extract_visuals(
         data["visual_extraction"]["provider"] = provider or data["visual_extraction"]["provider"]
         data["visual_extraction"]["model"] = model
         config = AppConfig.model_validate(data)
-        result = extract_visuals_command(
-            config=config,
-            cache_path=cache,
-            profile=profile,
-            dry_run=dry_run,
-            limit=limit,
-            force=force,
-            space_filter=space_filter,
-            event_callback=lambda event: _write_log(log_file, event),
-        )
+        if _show_progress(config, json_output=json_output, quiet=quiet):
+            progress = Progress(
+                TextColumn("[bold blue]extract-visuals"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn(
+                    "candidates={task.fields[candidates]} processed={task.fields[processed]} "
+                    "skipped={task.fields[skipped]} failed={task.fields[failed]} "
+                    "images={task.fields[images_done]}/{task.fields[images_total]} "
+                    "img_skipped={task.fields[images_skipped]} current={task.fields[current]}"
+                ),
+                TimeElapsedColumn(),
+                console=console,
+            )
+            with progress:
+                task_id = progress.add_task(
+                    "pages",
+                    total=1,
+                    candidates=0,
+                    processed=0,
+                    skipped=0,
+                    failed=0,
+                    images_done=0,
+                    images_total=0,
+                    images_skipped=0,
+                    current="-",
+                )
+
+                def progress_callback(snapshot: dict[str, object]) -> None:
+                    current_page = str(snapshot.get("current_page") or "-")
+                    current_image = str(snapshot.get("current_image") or "-")
+                    current_status = str(snapshot.get("current_status") or "-")
+                    current = current_page
+                    if current_image != "-":
+                        current = f"{current_page}:{current_image}"
+                    if current_status != "-":
+                        current = f"{current}:{current_status}"
+                    images_done = (
+                        _snapshot_int(snapshot, "images_extracted")
+                        + _snapshot_int(snapshot, "images_failed")
+                        + _snapshot_int(snapshot, "images_skipped")
+                    )
+                    progress.update(
+                        task_id,
+                        total=max(1, _snapshot_int(snapshot, "total", 1)),
+                        completed=_snapshot_int(snapshot, "scanned"),
+                        candidates=_snapshot_int(snapshot, "considered"),
+                        processed=_snapshot_int(snapshot, "processed"),
+                        skipped=_snapshot_int(snapshot, "skipped"),
+                        failed=_snapshot_int(snapshot, "failed"),
+                        images_done=images_done,
+                        images_total=_snapshot_int(snapshot, "images_discovered"),
+                        images_skipped=_snapshot_int(snapshot, "images_skipped"),
+                        current=current,
+                    )
+
+                result = extract_visuals_command(
+                    config=config,
+                    cache_path=cache,
+                    profile=profile,
+                    dry_run=dry_run,
+                    limit=limit,
+                    force=force,
+                    space_filter=space_filter,
+                    progress_callback=progress_callback,
+                    event_callback=lambda event: _write_log(log_file, event),
+                )
+        else:
+            result = extract_visuals_command(
+                config=config,
+                cache_path=cache,
+                profile=profile,
+                dry_run=dry_run,
+                limit=limit,
+                force=force,
+                space_filter=space_filter,
+                event_callback=lambda event: _write_log(log_file, event),
+            )
         _write_log(
             log_file, {"event": "command_finished", **result.summary.model_dump(mode="json")}
         )

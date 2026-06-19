@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -112,6 +113,7 @@ async def extract_visuals_for_page(
     generated_at: str,
     dry_run: bool = False,
     llm_transport: httpx.AsyncBaseTransport | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[VisualExtractionArtifact, int]:
     endpoint = build_visual_probe_endpoint(config)
     sources = discover_visual_sources(
@@ -138,15 +140,35 @@ async def extract_visuals_for_page(
         timeout=config.llm.timeout_seconds, transport=llm_transport
     ) as llm_client:
         for index, source in enumerate(sources, start=1):
-            images.append(
-                await extract_visual_source(
-                    index=index,
-                    source=source,
-                    config=config,
-                    endpoint=endpoint,
-                    llm_client=llm_client,
+            image_id = visual_image_id(index, source)
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "visual_image_started",
+                        "image_index": index,
+                        "image_total": len(sources),
+                        "image_id": image_id,
+                        "image_source_kind": source.source_kind,
+                    }
                 )
+            image = await extract_visual_source(
+                index=index,
+                source=source,
+                config=config,
+                endpoint=endpoint,
+                llm_client=llm_client,
             )
+            images.append(image)
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "visual_image_finished",
+                        "image_index": index,
+                        "image_total": len(sources),
+                        "image_id": image.image_id,
+                        "image_status": image.status,
+                    }
+                )
     succeeded = sum(1 for image in images if image.status == "success")
     failed = sum(1 for image in images if image.status == "failed")
     skipped = sum(1 for image in images if image.status == "skipped")
@@ -186,7 +208,7 @@ async def extract_visual_source(
     endpoint: ProbeEndpoint,
     llm_client: httpx.AsyncClient,
 ) -> VisualExtractionImage:
-    image_id = f"image-{index:03d}-{hashlib.sha256(source.source.encode('utf-8')).hexdigest()[:10]}"
+    image_id = visual_image_id(index, source)
     if source.source_kind == "url":
         return VisualExtractionImage(
             image_id=image_id,
@@ -428,6 +450,11 @@ def local_attachment_for_url(bundle: PageBundle, source: str) -> Path | None:
         if path.is_file() and path.name.lower() == lowered:
             return path
     return None
+
+
+def visual_image_id(index: int, source: VisualSource) -> str:
+    source_hash = hashlib.sha256(source.source.encode("utf-8")).hexdigest()[:10]
+    return f"image-{index:03d}-{source_hash}"
 
 
 def run_extract_visuals_for_page(**kwargs: Any) -> tuple[VisualExtractionArtifact, int]:
