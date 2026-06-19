@@ -29,15 +29,19 @@ run manifests and Onyx POC Markdown.
 ## Standard Flow
 
 1. Validate the cache.
-2. Enrich pages deterministically or with optional LLM tasks.
-3. Write per-page `enrichment.json` artifacts.
-4. Write stable global JSONL indexes under `knowledge/`.
-5. Write Onyx POC Markdown under `dist/onyx-enriched/`.
-6. Write human-readable reports under `reports/`.
-7. Write run artifacts under `runs/{run_id}/`.
+2. Optionally extract visual evidence from downloaded image attachments.
+3. Enrich pages deterministically or with optional LLM tasks.
+4. Write per-page `enrichment.json` artifacts.
+5. Write stable global JSONL indexes under `knowledge/`.
+6. Write Onyx POC Markdown under `dist/onyx-enriched/`.
+7. Write human-readable reports under `reports/`.
+8. Write run artifacts under `runs/{run_id}/`.
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki validate-cache \
+  --cache ./cache/customer-identity-and-access-management-entra
+
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki extract-visuals \
   --cache ./cache/customer-identity-and-access-management-entra
 
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
@@ -63,6 +67,71 @@ UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
 Deterministic enrichment includes document classification, subtype inference,
 hierarchy context, basic summaries, keywords, themes, concepts, candidate
 entities, facts, operational signals, warnings and quality scoring.
+
+## Visual Extraction Workflow
+
+`mimir-wiki extract-visuals` extracts OCR text and captions from visual source
+artifacts that are already present in the local cache. It writes one source-
+derived artifact per processed page:
+
+```text
+cache/{dataset_name}/pages/{page_id}/visual_extraction.json
+```
+
+This command is intentionally explicit and separate from `enrich` because it
+makes live multimodal model calls. It defaults to `gpt-5.4-mini`, based on the
+current local capability probe result.
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki extract-visuals \
+  --cache ./cache/carel3support \
+  --provider azure-ai-foundry \
+  --model gpt-5.4-mini
+```
+
+Boundary rule: `mimir-wiki` never connects to Confluence to fetch source images.
+It only reads local cache evidence produced by `mimir-confluence`:
+
+- downloaded image files under `pages/{page_id}/attachments/`
+- Markdown image URLs that resolve to those local attachment filenames
+- embedded `data:image/...` references in `clean.md`
+
+If a remote image URL is present in `clean.md` but the corresponding file is not
+available under `attachments/`, extraction records that image as skipped with
+`remote_source_not_in_cache`. Rerun `mimir-confluence` with attachment export
+enabled for pages where the missing image is important.
+
+After visual extraction, rerun enrichment so review flags and Onyx Markdown pick
+up the extraction results:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
+  --cache ./cache/carel3support \
+  --provider none \
+  --force
+```
+
+When every discovered image for a page is successfully extracted, enrichment adds
+`visual_content_extracted`. If extraction only partially succeeds, enrichment
+keeps `visual_content_missing` and adds `visual_content_partially_extracted` so
+the page remains in the manual review queue.
+
+## OCR Capability Probe
+
+Use `probe-ocr` to verify that a provider/model accepts image input before
+running extraction over a cache:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki probe-ocr \
+  --provider azure-ai-foundry \
+  --model gpt-5.4-mini \
+  --json
+```
+
+The probe sends a tiny generated PNG containing `MIMIR 42`. Treat
+`image_input_accepted: true` and `ocr_text_matched: true` as the minimum signal
+that the model is usable for visual extraction. If image input is accepted but
+the OCR text does not match, test more samples before using that model broadly.
 
 ## Live LLM Runs
 
@@ -134,6 +203,7 @@ Answer Summary
 Key Facts
 Source Links
 Source Content
+Extracted Visual Content    # when visual_extraction.json has successful images
 Additional Source Links
 Enrichment Details
 Source Metadata
@@ -143,10 +213,16 @@ Source content is included early for grounding. Images are rewritten to concise
 placeholders. Source links are prioritized so high-value runbook, procedure,
 Jira and Confluence links appear before low-value profile or mail links.
 
+When successful `visual_extraction.json` artifacts exist, Onyx Markdown also
+includes an `Extracted Visual Content` section containing source-derived OCR text
+and captions. This section is evidence extracted from source images, not approved
+curated wiki prose.
+
 ## Reports Workflow
 
 Reports summarize cache health, document types, stale/deprecated documents,
 high-value sources, missing owners, high-value hierarchy subtrees, attachments,
+LLM usage, page failures and follow-up candidates.
 
 Use `report` when you want to regenerate reports without rerunning enrichment.
 

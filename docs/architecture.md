@@ -12,6 +12,7 @@ src/mimir_wiki/
   constants.py
   cache_reader.py
   hierarchy.py
+  visual_extraction.py
   pipeline.py
   reports.py
   schema_export.py
@@ -24,6 +25,7 @@ src/mimir_wiki/
     prompts/
   llm/
     base.py
+    probe.py
   writers/
     artifacts.py
     onyx_markdown.py
@@ -35,9 +37,11 @@ src/mimir_wiki/
 - `config.py`: config model and precedence logic.
 - `cache_reader.py`: real cache parser and validator.
 - `hierarchy.py`: deterministic hierarchy context, page roles and hierarchy-aware quality adjustment.
+- `visual_extraction.py`: local-cache-only image discovery and multimodal OCR/caption extraction.
 - `enrichers/deterministic.py`: deterministic classification, taxonomy, facts, entities, signals and quality baseline.
 - `enrichers/llm.py`: LLM task and bundle execution, response caching, response validation and merge logic.
 - `llm/base.py`: provider abstractions, HTTP providers, retry/backoff/rate limit wrapper.
+- `llm/probe.py`: multimodal OCR capability probe helpers.
 - `writers/artifacts.py`: enrichment JSON and global JSONL writers.
 - `writers/onyx_markdown.py`: Onyx POC Markdown rendering and redaction.
 - `reports.py`: human-readable report generation.
@@ -49,6 +53,7 @@ src/mimir_wiki/
 ```text
 CacheReader
   -> PageBundle
+  -> optional visual_extraction.json
   -> hierarchy context
   -> deterministic enrichment
   -> optional LLM enrichment and merge
@@ -94,6 +99,38 @@ LLM task bundles reduce call count by requesting related fields in one response.
 Bundled responses are validated through Pydantic and merged into the same
 enrichment fields used by individual tasks.
 
+`probe-ocr` uses the same provider configuration style to send a generated image
+containing `MIMIR 42`. It is a capability check for image input and basic OCR,
+not a cache-processing command.
+
+## Visual Extraction Architecture
+
+Visual extraction is a separate optional command because it uses multimodal live
+model calls and can be expensive on image-heavy spaces.
+
+```text
+CacheReader
+  -> PageBundle.clean_markdown image refs
+  -> pages/{page_id}/attachments/ local image files
+  -> multimodal provider call
+  -> pages/{page_id}/visual_extraction.json
+  -> later enrich reads visual_extraction.json
+  -> visual_content_extracted review flag and Onyx extracted visual section
+```
+
+`mimir-wiki` does not fetch source images from Confluence or arbitrary remote
+URLs. If `clean.md` contains a Confluence image URL, visual extraction resolves
+that URL to a matching local file in `pages/{page_id}/attachments/`. If the file
+is absent, the image is recorded as skipped with
+`remote_source_not_in_cache`. Attachment download and source-system access remain
+the responsibility of `mimir-confluence`.
+
+The visual extraction artifact stores OCR text, captions, confidence, source
+path/reference, source hash, provider, model and prompt version. It is treated as
+source-derived evidence. Successful complete extraction changes enrichment review
+flags from `visual_content_missing` to `visual_content_extracted`; partial
+extraction keeps the missing-content review flags.
+
 ## Hierarchy Model
 
 Hierarchy context is deterministic and stored on each `Enrichment`:
@@ -126,12 +163,15 @@ The body is ordered for retrieval:
 2. `Key Facts`
 3. `Source Links`
 4. `Source Content`
-5. `Additional Source Links`
-6. `Enrichment Details`
-7. `Source Metadata`
+5. `Extracted Visual Content` when available
+6. `Additional Source Links`
+7. `Enrichment Details`
+8. `Source Metadata`
 
 The writer filters noisy displayed entities, limits early source links, rewrites
 images to placeholders, applies redaction, and keeps original source content for
+grounding. When `visual_extraction.json` contains successful image extractions,
+the writer also renders extracted OCR/captions as source-derived evidence.
 
 ## Artifact Contracts
 
@@ -142,6 +182,7 @@ files.
 Main artifacts:
 
 - `pages/{page_id}/enrichment.json`
+- `pages/{page_id}/visual_extraction.json`
 - `knowledge/document_index.jsonl`
 - `knowledge/quality_scores.jsonl`
 - `knowledge/themes.jsonl`
@@ -166,5 +207,6 @@ partial run artifacts and exits as partial success.
 
 Tests cover observed cache shapes, validation, deterministic enrichment, LLM
 retry/cache behavior, Foundry Responses API behavior, Onyx metadata/layout,
-redaction, hierarchy context, reports, schema export and CLI JSON/log behavior.
+redaction, hierarchy context, local visual extraction, reports, schema export and
+CLI JSON/log behavior.
 The real-cache smoke test is opt-in with `MIMIR_WIKI_RUN_SMOKE=1`.

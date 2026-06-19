@@ -6,8 +6,9 @@ and Onyx POC Markdown with first-line `#ONYX_METADATA={...}` metadata.
 
 The current MVP1 implementation includes cache validation, deterministic and
 optional LLM enrichment, task bundling, durable LLM response caching, hierarchy
-context, quality scoring, JSONL indexes, Onyx POC Markdown, reports, schema
-export, structured logs, page concurrency, and graceful cancellation.
+context, optional local visual OCR extraction, quality scoring, JSONL indexes,
+Onyx POC Markdown, reports, schema export, structured logs, page concurrency, and
+graceful cancellation.
 
 ## Documentation
 
@@ -37,6 +38,9 @@ Populate `.env` only when running live LLM enrichment.
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki validate-cache \
+  --cache ./cache/customer-identity-and-access-management-entra
+
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki extract-visuals \
   --cache ./cache/customer-identity-and-access-management-entra
 
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
@@ -98,6 +102,36 @@ UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
   --log-file ./runs/enrich-events.jsonl
 ```
 
+Probe a multimodal model before visual extraction:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki probe-ocr \
+  --provider azure-ai-foundry \
+  --model gpt-5.4-mini \
+  --json
+```
+
+Extract OCR/captions from downloaded image attachments, then rerun enrichment so
+Onyx Markdown includes extracted visual evidence:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki extract-visuals \
+  --cache ./cache/carel3support \
+  --provider azure-ai-foundry \
+  --model gpt-5.4-mini
+
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
+  --cache ./cache/carel3support \
+  --provider none \
+  --force
+```
+
+`mimir-wiki` does not connect to Confluence to download images. Visual extraction
+only reads local cache evidence created by `mimir-confluence`: downloaded files
+under `pages/{page_id}/attachments/`, matching Markdown image references, and
+embedded `data:image/...` values. Remote image URLs without local attachment
+files are recorded as skipped.
+
 Export JSON schemas for generated artifacts:
 
 ```bash
@@ -134,6 +168,21 @@ Common options:
 - `--include-source-content / --no-include-source-content`: include or omit cleaned source Markdown in Onyx output.
 - `--redaction redact|fail|off`: redact secrets, fail on matches, or disable redaction.
 
+`extract-visuals` options:
+
+- `--provider PROVIDER`: select the multimodal provider, defaulting to `azure-ai-foundry`.
+- `--model MODEL`: select the multimodal model/deployment, defaulting to `gpt-5.4-mini`.
+- `--limit INT`: process only the first N manifest pages.
+- `--space-filter SPACE`: process only one Confluence space key.
+- `--force`: re-extract pages even when a complete `visual_extraction.json` exists.
+- `--dry-run`: validate and count candidate pages/images without writing artifacts.
+
+`probe-ocr` options:
+
+- `--provider PROVIDER`: provider to probe.
+- `--model MODEL`: model/deployment to probe.
+- `--json`: recommended for comparing `image_input_accepted`, `ocr_text_matched`, and token usage.
+
 Cancellation behavior:
 
 - Pressing `Ctrl-C` during `enrich` cancels pending page work.
@@ -150,6 +199,7 @@ and compatibility checks. Schema files are generated from the Pydantic models in
 `src/mimir_wiki/schemas.py` and include:
 
 - `enrichment.schema.json` for per-page `pages/{page_id}/enrichment.json`.
+- `visual_extraction.schema.json` for per-page `pages/{page_id}/visual_extraction.json`.
 - `document_index_row.schema.json` for `knowledge/document_index.jsonl` rows.
 - `quality_score_row.schema.json` for `knowledge/quality_scores.jsonl` rows.
 - `theme_row.schema.json` for `knowledge/themes.jsonl` rows.
@@ -259,6 +309,7 @@ With these bundles enabled, the default eight tasks become three calls per page:
 ## Outputs
 
 - `pages/{page_id}/enrichment.json`
+- `pages/{page_id}/visual_extraction.json`
 - `knowledge/document_index.jsonl`
 - `knowledge/quality_scores.jsonl`
 - `knowledge/themes.jsonl`

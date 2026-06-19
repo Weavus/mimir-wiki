@@ -7,6 +7,8 @@ default and scriptable with `--json` and `--quiet`.
 
 - `mimir-wiki validate-cache`
 - `mimir-wiki enrich`
+- `mimir-wiki extract-visuals`
+- `mimir-wiki probe-ocr`
 - `mimir-wiki report`
 - `mimir-wiki export-schema`
 
@@ -25,6 +27,7 @@ default and scriptable with `--json` and `--quiet`.
 - `--log-file PATH`: append structured JSONL command, page, retry, cancellation and artifact events.
 
 Config precedence is built-in defaults, config file, profile, `.env`, process
+environment variables, then CLI flags.
 
 ## `validate-cache`
 
@@ -93,12 +96,100 @@ Filter and output options:
 Progress output includes page counts, failed pages, LLM calls completed/planned,
 cached calls, retries and current LLM task/page.
 
+`enrich` does not perform image OCR by itself. If `pages/{page_id}/visual_extraction.json`
+exists from a previous `extract-visuals` run, `enrich` reads it, adds
+`visual_content_extracted` when extraction completed successfully, and includes
+extracted visual evidence in generated Onyx Markdown. If extraction is partial,
+`enrich` keeps missing-content review flags.
+
 Exit codes:
 
 - `0`: success.
 - `1`: validation, input or credential problem.
 - `2`: runtime/provider failure after retries.
 - `3`: partial success with page-level failures or cancellation.
+
+## `extract-visuals`
+
+Extract OCR text and captions from visual source artifacts already present in a
+local `mimir-confluence` cache.
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki extract-visuals \
+  --cache ./cache/carel3support \
+  --provider azure-ai-foundry \
+  --model gpt-5.4-mini
+```
+
+Important boundary: `mimir-wiki` does not connect to Confluence and does not
+download source images. Downloading attachments is `mimir-confluence`'s job.
+`extract-visuals` only processes:
+
+- image files already downloaded under `pages/{page_id}/attachments/`
+- Markdown image references that resolve to those local attachment files
+- embedded `data:image/...` references already present in `clean.md`
+
+Remote image URLs that do not resolve to local cache attachments are recorded in
+`visual_extraction.json` as skipped with `error_type: remote_source_not_in_cache`.
+Rerun `mimir-confluence` with attachment export enabled if those visuals are
+needed.
+
+Useful options:
+
+- `--provider PROVIDER`: multimodal provider, defaults to `azure-ai-foundry`.
+- `--model MODEL`: multimodal model/deployment, defaults to `gpt-5.4-mini`.
+- `--limit INT`: process only the first N successful manifest pages.
+- `--space-filter SPACE`: process one Confluence space key.
+- `--force`: re-extract pages even when a complete artifact already exists.
+- `--dry-run`: count candidate pages/images without writing artifacts.
+- `--json --quiet`: machine-readable summary.
+
+Outputs:
+
+- `pages/{page_id}/visual_extraction.json`
+- `runs/{run_id}/summary.json`
+- `runs/{run_id}/page_failures.jsonl`
+- `runs/{run_id}/warnings.jsonl`
+
+Typical workflow:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki extract-visuals \
+  --cache ./cache/carel3support
+
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki enrich \
+  --cache ./cache/carel3support \
+  --provider none \
+  --force
+```
+
+Exit codes:
+
+- `0`: success.
+- `1`: validation, input or credential problem.
+- `3`: partial success with page-level extraction failures.
+
+## `probe-ocr`
+
+Probe whether a configured model/deployment accepts image input and can read a
+tiny generated image containing `MIMIR 42`.
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki probe-ocr \
+  --provider azure-ai-foundry \
+  --model gpt-5.4-mini \
+  --json
+```
+
+The JSON result includes:
+
+- `image_input_accepted`: the provider accepted image content.
+- `ocr_text_matched`: the response contained the expected `MIMIR 42` text.
+- `status`: `ok`, `image_accepted_ocr_mismatch`, or `unsupported_or_failed`.
+- `usage`: token usage when the provider returns it.
+
+Use `probe-ocr` before choosing a visual extraction model. A model can accept
+images but still be a poor OCR choice if `ocr_text_matched` is false.
 
 ## `report`
 
@@ -131,9 +222,9 @@ Export JSON Schema files for generated artifacts.
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki export-schema --out ./schemas
 ```
 
-Schema files include enrichment, document index rows, quality rows, themes,
-concepts, candidate entities, facts, failures, warnings, LLM usage and run
-summary.
+Schema files include enrichment, visual extraction, document index rows, quality
+rows, themes, concepts, candidate entities, facts, failures, warnings, LLM usage
+and run summary.
 
 ## Cancellation
 
