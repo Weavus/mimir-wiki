@@ -12,6 +12,7 @@ from mimir_wiki.schemas import (
     Enrichment,
     QualityScoreRow,
     ThemeRow,
+    VisualIndexRow,
 )
 from mimir_wiki.utils import (
     atomic_write_json,
@@ -111,6 +112,45 @@ def quality_score_row(
         warnings=enrichment.warnings,
         generated_at=generated_at,
     )
+
+
+def visual_index_rows(
+    bundle: PageBundle, *, generated_at: str, run_id: str, dataset_name: str
+) -> list[VisualIndexRow]:
+    from mimir_wiki.visual_extraction import load_visual_extraction
+
+    artifact = load_visual_extraction(bundle)
+    if artifact is None:
+        return []
+    return [
+        VisualIndexRow(
+            run_id=run_id,
+            dataset_name=dataset_name,
+            generated_at=generated_at,
+            document_id=bundle.document_id,
+            page_id=bundle.metadata.page_id,
+            space_key=bundle.metadata.space_key,
+            source_updated_at=bundle.metadata.updated_at,
+            source_content_hash=bundle.source_content_hash,
+            image_id=image.image_id,
+            status=image.status,
+            source=image.source,
+            source_kind=image.source_kind,
+            mime_type=image.mime_type,
+            content_sha256=image.content_sha256,
+            confidence=image.confidence,
+            caption=image.caption,
+            ocr_text=image.ocr_text,
+            provider=image.provider,
+            model=image.model,
+            prompt_version=image.prompt_version,
+            error_type=image.error_type,
+            error=image.error,
+            visual_run_id=artifact.run_id,
+            visual_extracted_at=artifact.extracted_at,
+        )
+        for image in artifact.images
+    ]
 
 
 def aggregate_theme_rows(
@@ -273,10 +313,12 @@ def write_global_jsonl(
     concept_rows: list[ConceptRow],
     candidate_entity_rows: list[CandidateEntityRow],
     candidate_fact_rows: list[CandidateFactRow],
+    visual_rows: list[VisualIndexRow],
 ) -> int:
     knowledge_dir.mkdir(parents=True, exist_ok=True)
     document_rows = sorted(document_rows, key=lambda row: (row.space_key, row.page_id))
     quality_rows = sorted(quality_rows, key=lambda row: (row.space_key, row.page_id))
+    visual_rows = sorted(visual_rows, key=lambda row: (row.space_key, row.page_id, row.image_id))
     outputs = {
         "document_index.jsonl": [row.model_dump(mode="json") for row in document_rows],
         "quality_scores.jsonl": [row.model_dump(mode="json") for row in quality_rows],
@@ -284,6 +326,7 @@ def write_global_jsonl(
         "concepts.jsonl": [row.model_dump(mode="json") for row in concept_rows],
         "candidate_entities.jsonl": [row.model_dump(mode="json") for row in candidate_entity_rows],
         "facts.jsonl": [row.model_dump(mode="json") for row in candidate_fact_rows],
+        "visual_index.jsonl": [row.model_dump(mode="json") for row in visual_rows],
     }
     for filename, rows in outputs.items():
         atomic_write_jsonl(knowledge_dir / filename, rows)

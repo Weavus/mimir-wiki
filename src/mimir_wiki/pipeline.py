@@ -26,6 +26,7 @@ from mimir_wiki.schemas import (
     PageFailure,
     QualityScoreRow,
     RunSummary,
+    VisualIndexRow,
     WarningRecord,
 )
 from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, new_run_id, utc_now
@@ -43,6 +44,7 @@ from mimir_wiki.writers.artifacts import (
     document_index_row,
     load_enrichment,
     quality_score_row,
+    visual_index_rows,
     write_enrichment,
     write_global_jsonl,
 )
@@ -217,6 +219,7 @@ class PageProcessResult:
     enrichment: Enrichment | None = None
     document_row: DocumentIndexRow | None = None
     quality_row: QualityScoreRow | None = None
+    visual_rows: list[VisualIndexRow] = field(default_factory=list)
     failures: list[PageFailure] = field(default_factory=list)
     warnings: list[WarningRecord] = field(default_factory=list)
     llm_usage: list[LLMUsage] = field(default_factory=list)
@@ -436,6 +439,12 @@ def _process_page(
             run_id=run_id,
             dataset_name=dataset_name,
         )
+        result.visual_rows = visual_index_rows(
+            bundle,
+            generated_at=generated_at,
+            run_id=run_id,
+            dataset_name=dataset_name,
+        )
         if event_callback:
             event_callback(
                 {
@@ -534,6 +543,7 @@ def enrich_command(
     enrichments: list[Enrichment] = []
     document_rows: list[DocumentIndexRow] = []
     quality_rows: list[QualityScoreRow] = []
+    visual_rows: list[VisualIndexRow] = []
     processed = 0
     skipped = 0
     considered = 0
@@ -650,6 +660,7 @@ def enrich_command(
                 document_rows.append(page_result.document_row)
             if page_result.quality_row is not None:
                 quality_rows.append(page_result.quality_row)
+            visual_rows.extend(page_result.visual_rows)
             emit_progress()
 
     executor = ThreadPoolExecutor(max_workers=worker_count)
@@ -732,6 +743,7 @@ def enrich_command(
     enrichments.sort(key=lambda item: (item.space_key, item.page_id))
     document_rows.sort(key=lambda item: (item.space_key, item.page_id))
     quality_rows.sort(key=lambda item: (item.space_key, item.page_id))
+    visual_rows.sort(key=lambda item: (item.space_key, item.page_id, item.image_id))
     output_paths.sort(key=lambda path: str(path))
 
     theme_rows = aggregate_theme_rows(
@@ -767,6 +779,7 @@ def enrich_command(
             concept_rows=concept_rows,
             candidate_entity_rows=entity_rows,
             candidate_fact_rows=fact_rows,
+            visual_rows=visual_rows,
         )
         output_paths.extend(
             [
@@ -776,9 +789,10 @@ def enrich_command(
                 knowledge_dir / "concepts.jsonl",
                 knowledge_dir / "candidate_entities.jsonl",
                 knowledge_dir / "facts.jsonl",
+                knowledge_dir / "visual_index.jsonl",
             ]
         )
-        for path in output_paths[-6:]:
+        for path in output_paths[-7:]:
             _artifact_event(
                 event_callback,
                 run_id=context.run_id,

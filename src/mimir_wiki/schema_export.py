@@ -16,6 +16,7 @@ from mimir_wiki.schemas import (
     RunSummary,
     ThemeRow,
     VisualExtractionArtifact,
+    VisualIndexRow,
     WarningRecord,
 )
 from mimir_wiki.utils import atomic_write_json
@@ -33,6 +34,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "llm_usage": LLMUsage,
     "run_summary": RunSummary,
     "visual_extraction": VisualExtractionArtifact,
+    "visual_index_row": VisualIndexRow,
 }
 
 

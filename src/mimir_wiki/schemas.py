@@ -340,6 +340,25 @@ class VisualExtractionArtifact(PageScopedArtifact):
     images: list[VisualExtractionImage] = Field(default_factory=list)
 
 
+class VisualIndexRow(PageScopedArtifact):
+    image_id: str
+    status: Literal["success", "skipped", "failed"]
+    source: str
+    source_kind: Literal["data_url", "file", "url"]
+    mime_type: str | None = None
+    content_sha256: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    caption: str = ""
+    ocr_text: str = ""
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    error_type: str | None = None
+    error: str | None = None
+    visual_run_id: str
+    visual_extracted_at: str
+
+
 class DocumentIndexRow(PageScopedArtifact):
     title: str
     url: str | None = None

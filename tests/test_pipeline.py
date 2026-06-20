@@ -45,6 +45,7 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert (tmp_path / "knowledge" / "concepts.jsonl").exists()
     assert (tmp_path / "knowledge" / "candidate_entities.jsonl").exists()
     assert (tmp_path / "knowledge" / "facts.jsonl").exists()
+    assert (tmp_path / "knowledge" / "visual_index.jsonl").exists()
     assert (tmp_path / "knowledge" / "facts.jsonl").read_text(encoding="utf-8").strip()
     document_index = [
         json.loads(line)
@@ -342,6 +343,16 @@ def test_extract_visuals_writes_artifact_and_enrichment_marks_extracted(
     enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
     assert "visual_content_extracted" in enrichment["review_flags"]
     assert "visual_content_missing" not in enrichment["review_flags"]
+    visual_rows = [
+        json.loads(line)
+        for line in (tmp_path / "knowledge" / "visual_index.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(visual_rows) == 1
+    assert visual_rows[0]["image_id"] == artifact["images"][0]["image_id"]
+    assert visual_rows[0]["ocr_text"] == "MIMIR 42"
+    assert visual_rows[0]["visual_run_id"] == artifact["run_id"]
     onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
     content = onyx_file.read_text(encoding="utf-8")
     assert "## Extracted Visual Content" in content
