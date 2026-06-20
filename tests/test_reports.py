@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from mimir_wiki.reports import (
+    VisualReportPage,
     write_duplicate_candidates_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
+    write_visual_extraction_report,
 )
 from mimir_wiki.schemas import (
     DocumentIndexRow,
@@ -15,6 +17,8 @@ from mimir_wiki.schemas import (
     LLMUsage,
     OnyxMetadata,
     Quality,
+    VisualExtractionArtifact,
+    VisualExtractionImage,
 )
 from mimir_wiki.writers.artifacts import aggregate_concept_rows, aggregate_theme_rows
 
@@ -87,6 +91,105 @@ def test_llm_usage_report_includes_cache_hit_rate(tmp_path: Path) -> None:
     content = path.read_text(encoding="utf-8")
     assert "Cache hit rate" in content
     assert "50%" in content
+
+
+def test_visual_extraction_report_includes_operational_triage_sections(
+    tmp_path: Path,
+) -> None:
+    artifact = VisualExtractionArtifact(
+        run_id="visual-run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        document_id="confluence:SPACE:1",
+        page_id="1",
+        space_key="SPACE",
+        source_content_hash="sha256:a",
+        extracted_at="2026-06-17T00:00:00Z",
+        status="partial",
+        provider="mock",
+        model="mock-model",
+        image_count=3,
+        images_succeeded=2,
+        images_failed=1,
+        images_skipped=1,
+        images=[
+            VisualExtractionImage(
+                image_id="image-001",
+                source="https://cdn.example.com/one.png",
+                source_kind="url",
+                status="skipped",
+                error_type="remote_source_not_in_cache",
+            ),
+            VisualExtractionImage(
+                image_id="image-002",
+                source="attachments/fail.png",
+                source_kind="file",
+                status="failed",
+                error_type="invalid_image",
+                content_sha256="hash-failed",
+            ),
+            VisualExtractionImage(
+                image_id="image-003",
+                source="attachments/low.png",
+                source_kind="file",
+                status="success",
+                confidence=0.42,
+                content_sha256="duplicate-hash",
+            ),
+        ],
+    )
+    duplicate_artifact = VisualExtractionArtifact(
+        run_id="visual-run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        document_id="confluence:SPACE:2",
+        page_id="2",
+        space_key="SPACE",
+        source_content_hash="sha256:b",
+        extracted_at="2026-06-17T00:00:00Z",
+        status="complete",
+        provider="mock",
+        model="mock-model",
+        image_count=1,
+        images_succeeded=1,
+        images=[
+            VisualExtractionImage(
+                image_id="image-001",
+                source="attachments/dupe.png",
+                source_kind="file",
+                status="success",
+                confidence=0.91,
+                content_sha256="duplicate-hash",
+            )
+        ],
+    )
+    path = write_visual_extraction_report(
+        out_dir=tmp_path,
+        dataset_name="tiny",
+        pages=[
+            VisualReportPage(
+                artifact=artifact,
+                title="Partial page",
+                url="https://example.com/1",
+                discovered_image_count=5,
+            ),
+            VisualReportPage(
+                artifact=duplicate_artifact,
+                title="Complete page",
+                discovered_image_count=1,
+            ),
+        ],
+    )
+
+    content = path.read_text(encoding="utf-8")
+    assert "# Visual Extraction" in content
+    assert "| partial | 1 |" in content
+    assert "| success | 2 |" in content
+    assert "| SPACE | 1 | 5 | 3 | 2 | Partial page | https://example.com/1 |" in content
+    assert "invalid_image" in content
+    assert "cdn.example.com" in content
+    assert "| 0.42 | SPACE | 1 | image-003 | file | attachments/low.png |" in content
+    assert "duplicate-hash" in content
 
 
 def test_aggregate_taxonomy_drops_one_off_single_word_noise() -> None:

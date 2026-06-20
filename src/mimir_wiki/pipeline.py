@@ -17,7 +17,11 @@ from mimir_wiki.enrichers.deterministic import enrich_page, refreshed_for_run, s
 from mimir_wiki.enrichers.llm import apply_llm_enrichment, enabled_llm_tasks
 from mimir_wiki.hierarchy import build_hierarchy_context, build_tree_counts
 from mimir_wiki.llm.base import LLMError, LLMProvider, provider_for_config
-from mimir_wiki.reports import write_cache_validation_report, write_enrichment_reports
+from mimir_wiki.reports import (
+    VisualReportPage,
+    write_cache_validation_report,
+    write_enrichment_reports,
+)
 from mimir_wiki.schemas import (
     DocumentIndexRow,
     Enrichment,
@@ -808,6 +812,7 @@ def enrich_command(
                 enrichments=enrichments,
                 llm_usage=context.llm_usage,
                 failures=context.failures,
+                visual_pages=_visual_report_pages(pages),
             )
             context.files_written += len(report_paths)
             output_paths.extend(report_paths)
@@ -1107,6 +1112,23 @@ def _read_enrichments(reader: CacheReader, limit: int | None) -> list[Enrichment
     return enrichments
 
 
+def _visual_report_pages(pages: list[PageBundle]) -> list[VisualReportPage]:
+    report_pages: list[VisualReportPage] = []
+    for bundle in pages:
+        artifact = load_visual_extraction(bundle)
+        if artifact is None:
+            continue
+        report_pages.append(
+            VisualReportPage(
+                artifact=artifact,
+                title=bundle.metadata.title,
+                url=bundle.metadata.url,
+                discovered_image_count=len(discover_visual_sources(bundle)),
+            )
+        )
+    return report_pages
+
+
 def report_command(
     *,
     config: AppConfig,
@@ -1132,6 +1154,7 @@ def report_command(
         document_rows = []
         quality_rows = []
     enrichments = _read_enrichments(reader, limit)
+    visual_pages = _visual_report_pages(reader.iter_pages(limit=limit))
     llm_usage = _read_run_llm_usage(Path(config.paths.runs))
     failures = _read_run_failures(Path(config.paths.runs))
     if not dry_run:
@@ -1150,6 +1173,7 @@ def report_command(
             enrichments=enrichments,
             llm_usage=llm_usage,
             failures=failures,
+            visual_pages=visual_pages,
         )
         output_paths.extend(report_paths)
         for path in report_paths:

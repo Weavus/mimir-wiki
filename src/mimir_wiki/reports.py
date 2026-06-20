@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from mimir_wiki.cache_reader import ValidationResult
-from mimir_wiki.schemas import DocumentIndexRow, Enrichment, LLMUsage, PageFailure, QualityScoreRow
+from mimir_wiki.schemas import (
+    DocumentIndexRow,
+    Enrichment,
+    LLMUsage,
+    PageFailure,
+    QualityScoreRow,
+    VisualExtractionArtifact,
+)
 from mimir_wiki.utils import atomic_write_text, hamming_distance_hex, normalize_term
+
+
+@dataclass(frozen=True)
+class VisualReportPage:
+    artifact: VisualExtractionArtifact
+    title: str
+    url: str | None = None
+    discovered_image_count: int | None = None
 
 
 def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -360,6 +377,201 @@ def write_page_failures_report(*, out_dir: Path, failures: list[PageFailure]) ->
     return path
 
 
+def _visual_image_counts(artifact: VisualExtractionArtifact) -> Counter[str]:
+    if artifact.images:
+        return Counter(image.status for image in artifact.images)
+    return Counter(
+        {
+            "success": artifact.images_succeeded,
+            "skipped": artifact.images_skipped,
+            "failed": artifact.images_failed,
+        }
+    )
+
+
+def _source_host(source: str) -> str:
+    parsed = urlparse(source)
+    return parsed.hostname or parsed.scheme or "unknown"
+
+
+def write_visual_extraction_report(
+    *,
+    out_dir: Path,
+    dataset_name: str,
+    pages: list[VisualReportPage],
+    low_confidence_threshold: float = 0.75,
+) -> Path:
+    page_counts: Counter[str] = Counter(page.artifact.status for page in pages)
+    image_counts: Counter[str] = Counter()
+    capped_rows: list[list[str]] = []
+    failed_rows: list[list[str]] = []
+    skipped_remote_counts: Counter[tuple[str, str, str]] = Counter()
+    low_confidence_rows: list[list[str]] = []
+    images_by_hash: dict[str, list[tuple[VisualReportPage, str, str]]] = defaultdict(list)
+
+    for page in pages:
+        artifact = page.artifact
+        image_counts.update(_visual_image_counts(artifact))
+        processed_count = artifact.image_count or len(artifact.images)
+        if page.discovered_image_count is not None:
+            omitted = max(0, page.discovered_image_count - processed_count)
+            if omitted:
+                capped_rows.append(
+                    [
+                        page.artifact.space_key,
+                        page.artifact.page_id,
+                        str(page.discovered_image_count),
+                        str(processed_count),
+                        str(omitted),
+                        page.title,
+                        page.url or "",
+                    ]
+                )
+        for image in artifact.images:
+            if image.status == "failed":
+                failed_rows.append(
+                    [
+                        artifact.space_key,
+                        artifact.page_id,
+                        image.image_id,
+                        image.error_type or "unknown",
+                        image.source_kind,
+                        image.source,
+                    ]
+                )
+            if image.status == "skipped" and image.error_type == "remote_source_not_in_cache":
+                skipped_remote_counts[
+                    (_source_host(image.source), image.source_kind, image.error_type or "unknown")
+                ] += 1
+            if (
+                image.status == "success"
+                and image.confidence is not None
+                and image.confidence < low_confidence_threshold
+            ):
+                low_confidence_rows.append(
+                    [
+                        f"{image.confidence:.2f}",
+                        artifact.space_key,
+                        artifact.page_id,
+                        image.image_id,
+                        image.source_kind,
+                        image.source,
+                    ]
+                )
+            if image.content_sha256:
+                images_by_hash[image.content_sha256].append((page, image.image_id, image.source))
+
+    capped_rows.sort(key=lambda row: int(row[4]), reverse=True)
+    failed_rows.sort(key=lambda row: (row[0], row[1], row[2]))
+    low_confidence_rows.sort(key=lambda row: float(row[0]))
+    duplicate_rows = []
+    for content_hash, group in images_by_hash.items():
+        if len(group) < 2:
+            continue
+        duplicate_rows.append(
+            [
+                content_hash,
+                str(len(group)),
+                ", ".join(
+                    f"{page.artifact.space_key}:{page.artifact.page_id}:{image_id}"
+                    for page, image_id, _source in group[:12]
+                ),
+                ", ".join(source for _page, _image_id, source in group[:4]),
+            ]
+        )
+    duplicate_rows.sort(key=lambda row: int(row[1]), reverse=True)
+
+    page_status_table = markdown_table(
+        ["Page status", "Count"],
+        [
+            [status, str(page_counts.get(status, 0))]
+            for status in ["complete", "partial", "skipped", "failed"]
+        ],
+    )
+    image_status_table = markdown_table(
+        ["Image status", "Count"],
+        [[status, str(image_counts.get(status, 0))] for status in ["success", "skipped", "failed"]],
+    )
+    capped_table = (
+        markdown_table(
+            ["Space", "Page ID", "Discovered", "Processed", "Omitted", "Title", "URL"],
+            capped_rows[:100],
+        )
+        if capped_rows
+        else "No capped visual pages found."
+    )
+    failed_table = (
+        markdown_table(
+            ["Space", "Page ID", "Image ID", "Type", "Source kind", "Source"], failed_rows[:200]
+        )
+        if failed_rows
+        else "No failed visual images found."
+    )
+    skipped_remote_rows = [
+        [host, source_kind, error_type, str(count)]
+        for (host, source_kind, error_type), count in sorted(
+            skipped_remote_counts.items(), key=lambda item: item[1], reverse=True
+        )
+    ]
+    skipped_remote_table = (
+        markdown_table(["Host/source", "Source kind", "Error type", "Count"], skipped_remote_rows)
+        if skipped_remote_rows
+        else "No skipped remote visual images found."
+    )
+    low_confidence_table = (
+        markdown_table(
+            ["Confidence", "Space", "Page ID", "Image ID", "Source kind", "Source"],
+            low_confidence_rows[:200],
+        )
+        if low_confidence_rows
+        else f"No successful images below confidence {low_confidence_threshold:.2f}."
+    )
+    duplicate_table = (
+        markdown_table(
+            ["Content SHA-256", "Count", "Images", "Sample sources"], duplicate_rows[:200]
+        )
+        if duplicate_rows
+        else "No duplicate visual image hashes found."
+    )
+    content = f"""# Visual Extraction
+
+Dataset: {dataset_name}
+
+## Page Status Counts
+
+{page_status_table}
+
+## Image Status Counts
+
+{image_status_table}
+
+## Capped Pages
+
+{capped_table}
+
+## Failed Images
+
+{failed_table}
+
+## Skipped Remote Images
+
+{skipped_remote_table}
+
+## Low Confidence Successful Images
+
+Threshold: {low_confidence_threshold:.2f}
+
+{low_confidence_table}
+
+## Duplicate Image Hashes
+
+{duplicate_table}
+"""
+    path = out_dir / "visual_extraction.md"
+    atomic_write_text(path, content)
+    return path
+
+
 def write_enrichment_reports(
     *,
     out_dir: Path,
@@ -369,6 +581,7 @@ def write_enrichment_reports(
     enrichments: list[Enrichment],
     llm_usage: list[LLMUsage] | None = None,
     failures: list[PageFailure] | None = None,
+    visual_pages: list[VisualReportPage] | None = None,
 ) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     return [
@@ -389,4 +602,7 @@ def write_enrichment_reports(
         write_duplicate_candidates_report(out_dir=out_dir, document_rows=document_rows),
         write_llm_usage_report(out_dir=out_dir, usage=llm_usage or []),
         write_page_failures_report(out_dir=out_dir, failures=failures or []),
+        write_visual_extraction_report(
+            out_dir=out_dir, dataset_name=dataset_name, pages=visual_pages or []
+        ),
     ]

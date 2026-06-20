@@ -74,6 +74,7 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert (tmp_path / "reports" / "duplicate_candidates.md").exists()
     assert (tmp_path / "reports" / "high_value_subtrees.md").exists()
     assert (tmp_path / "reports" / "llm_usage.md").exists()
+    assert (tmp_path / "reports" / "visual_extraction.md").exists()
     assert any((tmp_path / "runs").glob("*/summary.json"))
 
 
