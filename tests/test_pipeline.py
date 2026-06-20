@@ -477,6 +477,41 @@ def test_extract_visuals_emits_progress_snapshots(tiny_cache: Path, tmp_path: Pa
     assert snapshots[-1]["images_discovered"] == 1
 
 
+def test_extract_visuals_reports_images_omitted_by_page_cap(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    image_data = base64.b64encode(generate_probe_png()).decode("ascii")
+    attachment_path = tiny_cache / "pages" / "123" / "attachments" / "second.png"
+    attachment_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + f"\n![Probe 1](data:image/png;base64,{image_data})\n"
+        + "\n![Probe 2](attachments/second.png)\n",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+            "visual_extraction": {"max_images_per_page": 1},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=True,
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["visual_images_discovered"] == 2
+    assert result.summary.counts["visual_images_considered"] == 1
+    assert result.summary.counts["visual_images_omitted_by_page_cap"] == 1
+    assert result.summary.counts["visual_pages_capped"] == 1
+    assert result.warnings[0].warning_type == "visual_images_omitted_by_page_cap"
+
+
 def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     long_cell = "step " * 260

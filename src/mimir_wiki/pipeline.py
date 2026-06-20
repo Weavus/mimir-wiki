@@ -885,9 +885,12 @@ def extract_visuals_command(
     processed = 0
     skipped = 0
     images_discovered = 0
+    images_considered = 0
     images_extracted = 0
     images_failed = 0
     images_skipped = 0
+    images_omitted_by_page_cap = 0
+    pages_capped = 0
 
     def emit_progress(
         *,
@@ -921,15 +924,38 @@ def extract_visuals_command(
         scanned += 1
         current_page = bundle.metadata.page_id
         emit_progress(current_page=current_page, current_status="discovering")
-        sources = discover_visual_sources(
-            bundle, max_images=config.visual_extraction.max_images_per_page
-        )
+        all_sources = discover_visual_sources(bundle)
+        source_count = len(all_sources)
+        max_images = config.visual_extraction.max_images_per_page
+        sources = all_sources[:max_images] if max_images >= 0 else all_sources
+        omitted_by_cap = max(0, source_count - len(sources))
         if not sources:
             skipped += 1
             emit_progress(current_page=current_page, current_status="no_images")
             continue
         considered += 1
-        images_discovered += len(sources)
+        images_discovered += source_count
+        images_considered += len(sources)
+        if omitted_by_cap:
+            pages_capped += 1
+            images_omitted_by_page_cap += omitted_by_cap
+            context.warnings.append(
+                WarningRecord(
+                    run_id=context.run_id,
+                    dataset_name=dataset_name,
+                    generated_at=utc_now(),
+                    document_id=bundle.document_id,
+                    page_id=bundle.metadata.page_id,
+                    space_key=bundle.metadata.space_key,
+                    title=bundle.metadata.title,
+                    warning_type="visual_images_omitted_by_page_cap",
+                    message=(
+                        f"Discovered {source_count} visual sources but only "
+                        f"processed {len(sources)} due to max_images_per_page={max_images}."
+                    ),
+                    stage="extract-visuals",
+                )
+            )
         existing = load_visual_extraction(bundle)
         if (
             not force
@@ -1007,16 +1033,24 @@ def extract_visuals_command(
             "pages_considered": considered,
             "pages_processed": processed,
             "pages_skipped_unchanged": skipped,
+            "visual_pages_capped": pages_capped,
             "pages_failed": len(context.failures),
             "visual_images_discovered": images_discovered,
+            "visual_images_considered": images_considered,
             "visual_images_extracted": images_extracted,
             "visual_images_failed": images_failed,
             "visual_images_skipped": images_skipped,
+            "visual_images_omitted_by_page_cap": images_omitted_by_page_cap,
         },
         output_paths=output_paths,
     )
     context.files_written += context.write_run_artifacts(summary, event_callback)
-    return CommandResult(summary=summary, failures=context.failures, output_paths=output_paths)
+    return CommandResult(
+        summary=summary,
+        failures=context.failures,
+        warnings=context.warnings,
+        output_paths=output_paths,
+    )
 
 
 def _read_document_rows(path: Path) -> list[DocumentIndexRow]:
