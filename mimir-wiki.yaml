@@ -8,7 +8,7 @@ project_name: mimir-wiki
 
 paths:
   # Usually overridden per run with --cache.
-  cache: ./cache/customer-identity-and-access-management-entra
+  cache: ../mimir-confluence/cache/customer-identity-and-access-management-entra
   knowledge: ./knowledge
   vault: ./vault
   dist: ./dist/onyx-approved
