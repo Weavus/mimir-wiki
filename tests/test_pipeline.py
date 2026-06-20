@@ -457,6 +457,32 @@ def test_extract_visuals_skips_remote_images_not_in_cache(
     assert artifact["images"][0]["error_type"] == "remote_source_not_in_cache"
 
 
+def test_extract_visuals_ignores_confluence_icon_references(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8") + "\n![External link](/images/icons/linkext7.gif)\n",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=True,
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["pages_considered"] == 0
+    assert result.summary.counts["visual_images_discovered"] == 0
+
+
 def test_extract_visuals_emits_progress_snapshots(tiny_cache: Path, tmp_path: Path) -> None:
     image_data = base64.b64encode(generate_probe_png()).decode("ascii")
     clean_path = tiny_cache / "pages" / "123" / "clean.md"

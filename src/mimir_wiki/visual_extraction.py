@@ -81,6 +81,9 @@ def should_skip_image_source(source: str) -> bool:
     if not source or source.startswith("$"):
         return True
     parsed = urlparse(source)
+    source_path = unquote(parsed.path or source).lower()
+    if source_path.startswith("/images/icons/") or "/images/icons/" in source_path:
+        return True
     if parsed.scheme in {"http", "https", "data", "file"}:
         return False
     return Path(unquote(source)).suffix.lower() not in IMAGE_EXTENSIONS
