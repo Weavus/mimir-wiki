@@ -335,6 +335,11 @@ def test_extract_visuals_writes_artifact_and_enrichment_marks_extracted(
     assert artifact["model"] == "gpt-5.4-mini"
     assert artifact["images_succeeded"] == 1
     assert artifact["images"][0]["ocr_text"] == "MIMIR 42"
+    assert result.summary.counts["llm_calls"] == 1
+    usage_path = next((tmp_path / "runs").glob("*/llm_usage.jsonl"))
+    usage_rows = [json.loads(line) for line in usage_path.read_text(encoding="utf-8").splitlines()]
+    assert usage_rows[0]["task"] == "visual_ocr"
+    assert usage_rows[0]["provider"] == "azure-ai-foundry"
 
     enrich_result = enrich_command(
         config=config, cache_path=tiny_cache, profile=None, dry_run=False
@@ -357,6 +362,70 @@ def test_extract_visuals_writes_artifact_and_enrichment_marks_extracted(
     content = onyx_file.read_text(encoding="utf-8")
     assert "## Extracted Visual Content" in content
     assert "MIMIR 42" in content
+
+
+def test_extract_visuals_retries_with_shared_llm_client(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    image_data = base64.b64encode(generate_probe_png()).decode("ascii")
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + f"\n![Probe](data:image/png;base64,{image_data})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, json={"error": {"message": "try later"}})
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5.4-mini",
+                "output_text": json.dumps({"ocr_text": "MIMIR 42", "caption": "Probe"}),
+                "usage": {"input_tokens": 11, "output_tokens": 7},
+            },
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "initial_backoff_seconds": 0.001,
+                "max_backoff_seconds": 0.001,
+                "backoff_jitter": False,
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    assert calls == 2
+    assert result.summary.counts["llm_retries"] == 1
+    usage_path = next((tmp_path / "runs").glob("*/llm_usage.jsonl"))
+    usage_rows = [json.loads(line) for line in usage_path.read_text(encoding="utf-8").splitlines()]
+    assert usage_rows[0]["attempts"] == 2
+    assert usage_rows[0]["retries"] == 1
+    assert usage_rows[0]["input_tokens"] == 11
+    assert usage_rows[0]["output_tokens"] == 7
 
 
 def test_extract_visuals_resolves_urls_to_local_attachments(

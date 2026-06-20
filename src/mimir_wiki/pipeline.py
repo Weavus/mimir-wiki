@@ -996,7 +996,7 @@ def extract_visuals_command(
             )
 
         try:
-            artifact, files_written = run_extract_visuals_for_page(
+            artifact, files_written, usage_records, retries = run_extract_visuals_for_page(
                 bundle=bundle,
                 config=config,
                 run_id=context.run_id,
@@ -1021,6 +1021,8 @@ def extract_visuals_command(
             continue
         processed += 1
         context.files_written += files_written
+        context.llm_usage.extend(usage_records)
+        context.llm_retries += retries
         images_extracted += artifact.images_succeeded
         images_failed += artifact.images_failed
         images_skipped += artifact.images_skipped
@@ -1055,6 +1057,8 @@ def extract_visuals_command(
             "visual_images_failed": images_failed,
             "visual_images_skipped": images_skipped,
             "visual_images_omitted_by_page_cap": images_omitted_by_page_cap,
+            "llm_calls": len(context.llm_usage),
+            "llm_retries": context.llm_retries,
         },
         output_paths=output_paths,
     )

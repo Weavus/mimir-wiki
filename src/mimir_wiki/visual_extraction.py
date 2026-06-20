@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,8 +17,9 @@ import httpx
 
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
+from mimir_wiki.llm.base import LLMError, LLMRequest, LLMResponse, RateLimitedLLMClient
 from mimir_wiki.llm.probe import ProbeEndpoint, build_probe_endpoint, extract_response_text
-from mimir_wiki.schemas import VisualExtractionArtifact, VisualExtractionImage
+from mimir_wiki.schemas import LLMUsage, VisualExtractionArtifact, VisualExtractionImage
 from mimir_wiki.utils import atomic_write_json, load_json, utc_now
 
 IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
@@ -29,6 +31,50 @@ class VisualSource:
     source: str
     source_kind: Literal["data_url", "file", "url"]
     mime_type: str | None = None
+
+
+@dataclass(frozen=True)
+class VisualSourceResult:
+    image: VisualExtractionImage
+    usage: LLMUsage | None = None
+    retries: int = 0
+
+
+class VisualPayloadProvider:
+    def __init__(self, endpoint: ProbeEndpoint, llm_client: httpx.AsyncClient) -> None:
+        self.provider_name = endpoint.provider
+        self.endpoint = endpoint
+        self.llm_client = llm_client
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        if request.payload is None:
+            raise LLMError("Visual extraction request is missing payload", retryable=False)
+        try:
+            response = await self.llm_client.post(
+                self.endpoint.url,
+                headers=self.endpoint.headers,
+                json=request.payload,
+            )
+        except httpx.TimeoutException as exc:
+            raise LLMError(
+                "Visual extraction timed out", retryable=True, error_type="timeout"
+            ) from exc
+        except httpx.TransportError as exc:
+            raise LLMError(
+                f"Visual extraction connection error: {exc}",
+                retryable=True,
+                error_type="connection_error",
+            ) from exc
+        if response.status_code >= 400:
+            raise visual_http_error(response)
+        data = response.json()
+        usage = data.get("usage") or {}
+        return LLMResponse(
+            text=extract_response_text(data),
+            model=str(data.get("model") or request.model or self.endpoint.model),
+            input_tokens=usage.get("input_tokens") or usage.get("prompt_tokens"),
+            output_tokens=usage.get("output_tokens") or usage.get("completion_tokens"),
+        )
 
 
 def visual_extraction_path(bundle: PageBundle) -> Path:
@@ -117,7 +163,7 @@ async def extract_visuals_for_page(
     dry_run: bool = False,
     llm_transport: httpx.AsyncBaseTransport | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
-) -> tuple[VisualExtractionArtifact, int]:
+) -> tuple[VisualExtractionArtifact, int, list[LLMUsage], int]:
     endpoint = build_visual_probe_endpoint(config)
     sources = discover_visual_sources(
         bundle, max_images=config.visual_extraction.max_images_per_page
@@ -135,13 +181,21 @@ async def extract_visuals_for_page(
         )
         if not dry_run:
             atomic_write_json(visual_extraction_path(bundle), artifact.model_dump(mode="json"))
-            return artifact, 1
-        return artifact, 0
+            return artifact, 1, [], 0
+        return artifact, 0, [], 0
 
     images: list[VisualExtractionImage] = []
+    usage_records: list[LLMUsage] = []
+    total_retries = 0
     async with httpx.AsyncClient(
         timeout=config.llm.timeout_seconds, transport=llm_transport
     ) as llm_client:
+        provider = VisualPayloadProvider(endpoint, llm_client)
+        rate_limited_client = RateLimitedLLMClient(
+            provider,
+            config.llm,
+            retry_callback=progress_callback,
+        )
         for index, source in enumerate(sources, start=1):
             image_id = visual_image_id(index, source)
             if progress_callback is not None:
@@ -154,14 +208,22 @@ async def extract_visuals_for_page(
                         "image_source_kind": source.source_kind,
                     }
                 )
-            image = await extract_visual_source(
+            result = await extract_visual_source(
                 index=index,
                 source=source,
                 config=config,
                 endpoint=endpoint,
-                llm_client=llm_client,
+                llm_client=rate_limited_client,
+                bundle=bundle,
+                run_id=run_id,
+                dataset_name=dataset_name,
+                generated_at=generated_at,
             )
+            image = result.image
             images.append(image)
+            if result.usage is not None:
+                usage_records.append(result.usage)
+            total_retries += result.retries
             if progress_callback is not None:
                 progress_callback(
                     {
@@ -199,8 +261,8 @@ async def extract_visuals_for_page(
     )
     if not dry_run:
         atomic_write_json(visual_extraction_path(bundle), artifact.model_dump(mode="json"))
-        return artifact, 1
-    return artifact, 0
+        return artifact, 1, usage_records, total_retries
+    return artifact, 0, usage_records, total_retries
 
 
 async def extract_visual_source(
@@ -209,39 +271,47 @@ async def extract_visual_source(
     source: VisualSource,
     config: AppConfig,
     endpoint: ProbeEndpoint,
-    llm_client: httpx.AsyncClient,
-) -> VisualExtractionImage:
+    llm_client: RateLimitedLLMClient,
+    bundle: PageBundle,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+) -> VisualSourceResult:
     image_id = visual_image_id(index, source)
     if source.source_kind == "url":
-        return VisualExtractionImage(
-            image_id=image_id,
-            source=source.source,
-            source_kind=source.source_kind,
-            mime_type=source.mime_type,
-            status="skipped",
-            error_type="remote_source_not_in_cache",
-            error=(
-                "Remote image references are not fetched by mimir-wiki. "
-                "Run mimir-confluence with attachment export enabled, then rerun extraction."
+        return VisualSourceResult(
+            VisualExtractionImage(
+                image_id=image_id,
+                source=source.source,
+                source_kind=source.source_kind,
+                mime_type=source.mime_type,
+                status="skipped",
+                error_type="remote_source_not_in_cache",
+                error=(
+                    "Remote image references are not fetched by mimir-wiki. "
+                    "Run mimir-confluence with attachment export enabled, then rerun extraction."
+                ),
+                provider=endpoint.provider,
+                model=endpoint.model,
+                prompt_version=config.visual_extraction.prompt_version,
             ),
-            provider=endpoint.provider,
-            model=endpoint.model,
-            prompt_version=config.visual_extraction.prompt_version,
         )
     try:
         image_bytes, mime_type = load_image_bytes(source)
     except (OSError, ValueError) as exc:
-        return VisualExtractionImage(
-            image_id=image_id,
-            source=source.source,
-            source_kind=source.source_kind,
-            mime_type=source.mime_type,
-            status="failed",
-            error_type=type(exc).__name__,
-            error=str(exc)[:1000],
-            provider=endpoint.provider,
-            model=endpoint.model,
-            prompt_version=config.visual_extraction.prompt_version,
+        return VisualSourceResult(
+            VisualExtractionImage(
+                image_id=image_id,
+                source=source.source,
+                source_kind=source.source_kind,
+                mime_type=source.mime_type,
+                status="failed",
+                error_type=type(exc).__name__,
+                error=str(exc)[:1000],
+                provider=endpoint.provider,
+                model=endpoint.model,
+                prompt_version=config.visual_extraction.prompt_version,
+            )
         )
     payload = build_visual_payload(
         endpoint,
@@ -249,68 +319,94 @@ async def extract_visual_source(
         mime_type=mime_type,
         title_hint=Path(unquote(urlparse(source.source).path)).name,
     )
+    source_hash = hashlib.sha256(image_bytes).hexdigest()
+    started = time.monotonic()
     try:
-        response = await llm_client.post(endpoint.url, headers=endpoint.headers, json=payload)
-    except httpx.HTTPError as exc:
-        return VisualExtractionImage(
-            image_id=image_id,
-            source=source.source,
-            source_kind=source.source_kind,
-            mime_type=mime_type,
-            content_sha256=hashlib.sha256(image_bytes).hexdigest(),
-            status="failed",
-            error_type=type(exc).__name__,
-            error=str(exc)[:1000],
-            provider=endpoint.provider,
-            model=endpoint.model,
-            prompt_version=config.visual_extraction.prompt_version,
+        response, attempts, retries = await llm_client.complete(
+            LLMRequest(
+                task="visual_ocr",
+                prompt="Extract source evidence from this Confluence image.",
+                document_id=bundle.document_id,
+                model=endpoint.model,
+                prompt_version=config.visual_extraction.prompt_version,
+                payload=payload,
+            )
         )
-    if response.status_code >= 400:
-        return VisualExtractionImage(
-            image_id=image_id,
-            source=source.source,
-            source_kind=source.source_kind,
-            mime_type=mime_type,
-            content_sha256=hashlib.sha256(image_bytes).hexdigest(),
-            status="failed",
-            error_type=f"http_{response.status_code}",
-            error=response.text[:1000],
-            provider=endpoint.provider,
-            model=endpoint.model,
-            prompt_version=config.visual_extraction.prompt_version,
+    except LLMError as exc:
+        error_type = f"http_{exc.status_code}" if exc.status_code is not None else exc.error_type
+        return VisualSourceResult(
+            VisualExtractionImage(
+                image_id=image_id,
+                source=source.source,
+                source_kind=source.source_kind,
+                mime_type=mime_type,
+                content_sha256=source_hash,
+                status="failed",
+                error_type=error_type,
+                error=str(exc)[:1000],
+                provider=endpoint.provider,
+                model=endpoint.model,
+                prompt_version=config.visual_extraction.prompt_version,
+            )
         )
-    text = extract_response_text(response.json())
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    text = response.text
     parsed = parse_visual_response(text)
     ocr_text = parsed.get("ocr_text", "")
     caption = parsed.get("caption", "")
     confidence = parsed.get("confidence")
     if not ocr_text and not caption:
-        return VisualExtractionImage(
+        return VisualSourceResult(
+            VisualExtractionImage(
+                image_id=image_id,
+                source=source.source,
+                source_kind=source.source_kind,
+                mime_type=mime_type,
+                content_sha256=source_hash,
+                status="failed",
+                error_type="empty_extraction",
+                error=text[:1000],
+                provider=endpoint.provider,
+                model=endpoint.model,
+                prompt_version=config.visual_extraction.prompt_version,
+            ),
+            retries=retries,
+        )
+    return VisualSourceResult(
+        image=VisualExtractionImage(
             image_id=image_id,
             source=source.source,
             source_kind=source.source_kind,
             mime_type=mime_type,
-            content_sha256=hashlib.sha256(image_bytes).hexdigest(),
-            status="failed",
-            error_type="empty_extraction",
-            error=text[:1000],
+            content_sha256=source_hash,
+            status="success",
+            ocr_text=ocr_text,
+            caption=caption,
+            confidence=confidence if isinstance(confidence, int | float) else None,
             provider=endpoint.provider,
-            model=endpoint.model,
+            model=response.model,
             prompt_version=config.visual_extraction.prompt_version,
-        )
-    return VisualExtractionImage(
-        image_id=image_id,
-        source=source.source,
-        source_kind=source.source_kind,
-        mime_type=mime_type,
-        content_sha256=hashlib.sha256(image_bytes).hexdigest(),
-        status="success",
-        ocr_text=ocr_text,
-        caption=caption,
-        confidence=confidence if isinstance(confidence, int | float) else None,
-        provider=endpoint.provider,
-        model=endpoint.model,
-        prompt_version=config.visual_extraction.prompt_version,
+        ),
+        usage=LLMUsage(
+            run_id=run_id,
+            dataset_name=dataset_name,
+            generated_at=generated_at,
+            document_id=bundle.document_id,
+            page_id=bundle.metadata.page_id,
+            space_key=bundle.metadata.space_key,
+            source_updated_at=bundle.metadata.updated_at,
+            source_content_hash=bundle.source_content_hash,
+            task="visual_ocr",
+            provider=endpoint.provider,
+            model=response.model,
+            prompt_version=config.visual_extraction.prompt_version,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            attempts=attempts,
+            retries=retries,
+            elapsed_ms=elapsed_ms,
+        ),
+        retries=retries,
     )
 
 
@@ -322,6 +418,24 @@ def build_visual_probe_endpoint(config: AppConfig) -> ProbeEndpoint:
     data["llm"].setdefault("azure_ai_foundry", {})["deployment_env"] = ""
     data["llm"].setdefault("openai_compatible", {})["model_env"] = ""
     return build_probe_endpoint(AppConfig.model_validate(data))
+
+
+def visual_http_error(response: httpx.Response) -> LLMError:
+    retry_after: float | None = None
+    retry_after_value = response.headers.get("Retry-After")
+    if retry_after_value:
+        try:
+            retry_after = float(retry_after_value)
+        except ValueError:
+            retry_after = None
+    retryable = response.status_code in {408, 409, 429, 500, 502, 503, 504}
+    return LLMError(
+        f"Provider returned HTTP {response.status_code}: {response.text[:1000]}",
+        retryable=retryable,
+        status_code=response.status_code,
+        retry_after=retry_after,
+        error_type=f"http_{response.status_code}",
+    )
 
 
 def load_image_bytes(source: VisualSource) -> tuple[bytes, str]:
@@ -460,5 +574,7 @@ def visual_image_id(index: int, source: VisualSource) -> str:
     return f"image-{index:03d}-{source_hash}"
 
 
-def run_extract_visuals_for_page(**kwargs: Any) -> tuple[VisualExtractionArtifact, int]:
+def run_extract_visuals_for_page(
+    **kwargs: Any,
+) -> tuple[VisualExtractionArtifact, int, list[LLMUsage], int]:
     return asyncio.run(extract_visuals_for_page(**kwargs))

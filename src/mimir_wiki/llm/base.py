@@ -47,6 +47,7 @@ class LLMRequest:
     document_id: str | None = None
     model: str | None = None
     prompt_version: str | None = None
+    payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
