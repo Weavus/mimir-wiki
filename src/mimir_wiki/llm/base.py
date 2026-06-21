@@ -300,21 +300,35 @@ class RateLimitedLLMClient:
                     await self._respect_request_limit()
                     token_reservation = await self._respect_token_limit(request)
                 try:
+                    self._emit_provider_event("llm_provider_call_started", request, model_key)
                     response = await asyncio.wait_for(
                         self.provider.complete(request), timeout=self.config.timeout_seconds
                     )
                     await self._release_adaptive_slot(model_key, success=True)
                     self._record_actual_token_usage(token_reservation, response)
+                    self._emit_provider_event(
+                        "llm_provider_call_finished",
+                        request,
+                        model_key,
+                        input_tokens=response.input_tokens,
+                        output_tokens=response.output_tokens,
+                    )
                     return response, attempts, retries
                 except TimeoutError as exc:
                     error = LLMError("LLM request timed out", retryable=True, error_type="timeout")
                     await self._release_adaptive_slot(model_key, error=error)
+                    self._emit_provider_event(
+                        "llm_provider_call_failed", request, model_key, error=error
+                    )
                     if not self._should_retry(error, attempts):
                         raise error from exc
                     retries += 1
                     await self._sleep_for_retry(error, attempts, request)
                 except LLMError as exc:
                     await self._release_adaptive_slot(model_key, error=exc)
+                    self._emit_provider_event(
+                        "llm_provider_call_failed", request, model_key, error=exc
+                    )
                     if not self._should_retry(exc, attempts):
                         raise
                     retries += 1
@@ -322,6 +336,33 @@ class RateLimitedLLMClient:
 
     def _model_key(self, request: LLMRequest) -> str:
         return f"{self.provider.provider_name}:{request.model or self.config.model}"
+
+    def _emit_provider_event(
+        self,
+        event: str,
+        request: LLMRequest,
+        model_key: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        error: LLMError | None = None,
+    ) -> None:
+        if self.retry_callback is None:
+            return
+        self.retry_callback(
+            {
+                "event": event,
+                "provider": self.provider.provider_name,
+                "task": request.task,
+                "document_id": request.document_id,
+                "model": request.model,
+                "model_key": model_key,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "status_code": error.status_code if error is not None else None,
+                "error_type": error.error_type if error is not None else None,
+            }
+        )
 
     def _adaptive_state(self, model_key: str) -> _AdaptiveConcurrencyState:
         state = self._adaptive_states.get(model_key)

@@ -297,10 +297,42 @@ def apply_llm_enrichment(
             dataset_name=dataset_name,
             generated_at=generated_at,
             provider=provider,
+            client=None,
             work_items=work_items,
             event_callback=event_callback,
             progress_callback=progress_callback,
         )
+    )
+
+
+async def apply_llm_enrichment_async(
+    *,
+    bundle: PageBundle,
+    enrichment: Enrichment,
+    config: AppConfig,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    provider: LLMProvider,
+    client: RateLimitedLLMClient | None = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> LLMEnrichmentResult:
+    work_items = enabled_llm_work_items(config)
+    if not work_items:
+        return LLMEnrichmentResult(enrichment=enrichment)
+    return await _apply_llm_enrichment_async(
+        bundle=bundle,
+        enrichment=enrichment,
+        config=config,
+        run_id=run_id,
+        dataset_name=dataset_name,
+        generated_at=generated_at,
+        provider=provider,
+        client=client,
+        work_items=work_items,
+        event_callback=event_callback,
+        progress_callback=progress_callback,
     )
 
 
@@ -313,6 +345,7 @@ async def _apply_llm_enrichment_async(
     dataset_name: str,
     generated_at: str,
     provider: LLMProvider,
+    client: RateLimitedLLMClient | None,
     work_items: list[LLMWorkItem],
     event_callback: Callable[[dict[str, Any]], None] | None,
     progress_callback: Callable[[dict[str, Any]], None] | None,
@@ -323,7 +356,7 @@ async def _apply_llm_enrichment_async(
         if progress_callback is not None:
             progress_callback(event)
 
-    client = RateLimitedLLMClient(provider, config.llm, retry_callback=llm_client_event)
+    client = client or RateLimitedLLMClient(provider, config.llm, retry_callback=llm_client_event)
     result = LLMEnrichmentResult(enrichment=enrichment)
     chunks, truncated = chunk_text(bundle.text, config)
     if progress_callback:
@@ -429,6 +462,8 @@ async def _apply_llm_enrichment_async(
                             "chunk_count": len(chunks),
                             "cached": response.cached,
                             "retries": retries,
+                            "input_tokens": response.input_tokens,
+                            "output_tokens": response.output_tokens,
                         }
                     )
             except (LLMError, ValueError, ValidationError) as exc:

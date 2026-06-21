@@ -3071,10 +3071,13 @@ llm:
       model: gpt-4.1
       prompt_version: quality-warnings-v1
   temperature: 0
-  max_concurrency: 4
+  max_concurrency: 8
   requests_per_minute:
   tokens_per_minute:
-  max_retries: 3
+  adaptive_concurrency: true
+  adaptive_initial_concurrency: 5
+  adaptive_min_concurrency: 1
+  max_retries: 5
   initial_backoff_seconds: 1
   max_backoff_seconds: 60
   backoff_jitter: true
@@ -3116,7 +3119,7 @@ processing:
   # Page workers bound concurrent page-level processing. LLM request concurrency
   # is controlled by llm.max_concurrency plus adaptive per-model throttling.
   page_workers: 8
-  llm_workers: 4
+  llm_workers: 8
   # Reserved for future writer queues. MVP writes artifacts synchronously and
   # deterministically, so changing this currently has no runtime effect.
   writer_workers: 1

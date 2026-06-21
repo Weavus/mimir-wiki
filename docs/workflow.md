@@ -145,11 +145,11 @@ visual_extraction:
   max_images_per_representative_group: 3
 
 llm:
-  max_concurrency: 4
+  max_concurrency: 8
   requests_per_minute: null
   tokens_per_minute: null
   adaptive_concurrency: true
-  adaptive_initial_concurrency: 4
+  adaptive_initial_concurrency: 5
   adaptive_min_concurrency: 1
 ```
 
@@ -247,6 +247,12 @@ adaptive concurrency state and current work. `validate-cache` and `report` use a
 smaller local-artifact dashboard focused on page/report progress, artifact
 counts, warnings/failures and current work. Non-interactive modes such as
 `--json`, `--quiet`, CI and redirected output remain script-friendly.
+
+LLM dashboard rates split live provider calls from cache hits. `live LLM/s` is
+the rate of actual provider calls completed during this run. `cache/s` is the
+rate of LLM work items served from the local response cache. Token rows show live
+input/output tokens and cached token metadata separately so cached runs do not
+look like newly spent provider tokens.
 
 ## LLM Cache And Changed-Only
 

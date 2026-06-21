@@ -198,9 +198,11 @@ Main artifacts:
 
 ## Concurrency And Cancellation
 
-Page processing uses `processing.page_workers`. LLM-enabled runs cap concurrent
-page work by `processing.llm_workers`. Page-level outputs are distinct files;
-global JSONL files and reports are written after workers complete.
+Page processing uses `processing.page_workers`. Live LLM provider calls go
+through one shared rate-limited client per command run and are capped by
+`llm.max_concurrency` plus adaptive per-model throttling. Page-level outputs are
+distinct files; global JSONL files and reports are written after workers
+complete.
 
 Cancellation cancels pending futures, lets running page writes finish, writes
 partial run artifacts and exits as partial success.

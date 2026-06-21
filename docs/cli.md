@@ -35,6 +35,11 @@ and adaptive per-model throttling. `processing.writer_workers` is reserved for a
 future writer queue; MVP artifact writes are synchronous and deterministic, so
 changing it currently has no runtime effect.
 
+LLM dashboards distinguish live provider calls from cached LLM work items.
+`live LLM/s` is actual provider-call throughput; `cache/s` is local response
+cache throughput. Token rows show live input/output tokens separately from cached
+token metadata that represents avoided provider work.
+
 ## `validate-cache`
 
 Validate one exported cache.

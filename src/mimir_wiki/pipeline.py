@@ -22,7 +22,11 @@ from mimir_wiki.constants import (
     SCHEMA_VERSION,
 )
 from mimir_wiki.enrichers.deterministic import enrich_page, refreshed_for_run, signature_matches
-from mimir_wiki.enrichers.llm import apply_llm_enrichment, enabled_llm_tasks
+from mimir_wiki.enrichers.llm import (
+    apply_llm_enrichment,
+    apply_llm_enrichment_async,
+    enabled_llm_tasks,
+)
 from mimir_wiki.hierarchy import build_hierarchy_context, build_tree_counts
 from mimir_wiki.llm.base import LLMError, LLMProvider, RateLimitedLLMClient, provider_for_config
 from mimir_wiki.reports import (
@@ -533,6 +537,189 @@ def _process_page(
     return result
 
 
+async def _process_page_async(
+    *,
+    bundle: PageBundle,
+    config: AppConfig,
+    provider: LLMProvider | None,
+    llm_client: RateLimitedLLMClient | None,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    dry_run: bool,
+    changed_only: bool,
+    force: bool,
+    document_type_filter: str | None,
+    onyx_root: Path,
+    event_callback: Callable[[dict[str, Any]], None] | None,
+    llm_progress_callback: Callable[[dict[str, Any]], None] | None,
+    hierarchy: HierarchyContext | None,
+) -> PageProcessResult:
+    result = PageProcessResult(page_id=bundle.metadata.page_id)
+    enrichment_path = bundle.paths.root / "enrichment.json"
+    if event_callback:
+        event_callback(
+            {
+                "event": "page_started",
+                "run_id": run_id,
+                "page_id": bundle.metadata.page_id,
+                "space_key": bundle.metadata.space_key,
+                "title": bundle.metadata.title,
+            }
+        )
+    try:
+        existing = _load_existing_enrichment(enrichment_path)
+        unchanged = (
+            changed_only
+            and not force
+            and existing is not None
+            and signature_matches(existing, bundle, config)
+        )
+        if unchanged:
+            assert existing is not None
+            enrichment = refreshed_for_run(
+                existing,
+                run_id=run_id,
+                generated_at=generated_at,
+                dataset_name=dataset_name,
+            )
+            result.skipped = 1
+        else:
+            enrichment = enrich_page(
+                bundle,
+                run_id=run_id,
+                dataset_name=dataset_name,
+                config=config,
+                generated_at=generated_at,
+                hierarchy=hierarchy,
+            )
+            if provider is not None:
+                llm_result = await apply_llm_enrichment_async(
+                    bundle=bundle,
+                    enrichment=enrichment,
+                    config=config,
+                    run_id=run_id,
+                    dataset_name=dataset_name,
+                    generated_at=generated_at,
+                    provider=provider,
+                    client=llm_client,
+                    event_callback=event_callback,
+                    progress_callback=llm_progress_callback,
+                )
+                enrichment = llm_result.enrichment
+                result.llm_usage.extend(llm_result.usage)
+                result.failures.extend(llm_result.failures)
+                result.warnings.extend(llm_result.warnings)
+                result.llm_retries += llm_result.retries
+            if document_type_filter and enrichment.document_type != document_type_filter:
+                result.filtered = True
+                return result
+            result.processed = 1
+            if not dry_run and config.features.outputs.enrichment_json:
+                write_enrichment(enrichment_path, enrichment)
+                result.files_written += 1
+                result.output_paths.append(enrichment_path)
+                _artifact_event(
+                    event_callback,
+                    run_id=run_id,
+                    artifact_type="enrichment_json",
+                    path=enrichment_path,
+                    page_id=bundle.metadata.page_id,
+                    space_key=bundle.metadata.space_key,
+                )
+            if (
+                not dry_run
+                and config.features.outputs.onyx_poc_markdown
+                and config.onyx_poc.emit_enriched_markdown
+            ):
+                path, warning_records = write_onyx_markdown(
+                    root=onyx_root,
+                    dataset_name=dataset_name,
+                    bundle=bundle,
+                    enrichment=enrichment,
+                    config=config,
+                    generated_at=generated_at,
+                    run_id=run_id,
+                )
+                result.files_written += 1
+                result.warnings.extend(warning_records)
+                result.output_paths.append(path)
+                _artifact_event(
+                    event_callback,
+                    run_id=run_id,
+                    artifact_type="onyx_markdown",
+                    path=path,
+                    page_id=bundle.metadata.page_id,
+                    space_key=bundle.metadata.space_key,
+                )
+        result.enrichment = enrichment
+        result.document_row = document_index_row(
+            bundle,
+            enrichment,
+            generated_at=generated_at,
+            run_id=run_id,
+            dataset_name=dataset_name,
+        )
+        result.quality_row = quality_score_row(
+            enrichment,
+            generated_at=generated_at,
+            run_id=run_id,
+            dataset_name=dataset_name,
+        )
+        result.visual_rows = visual_index_rows(
+            bundle,
+            generated_at=generated_at,
+            run_id=run_id,
+            dataset_name=dataset_name,
+        )
+        if event_callback:
+            event_callback(
+                {
+                    "event": "page_finished",
+                    "run_id": run_id,
+                    "page_id": bundle.metadata.page_id,
+                    "space_key": bundle.metadata.space_key,
+                    "title": bundle.metadata.title,
+                    "processed": not unchanged,
+                    "skipped": unchanged,
+                    "document_type": enrichment.document_type,
+                    "quality_score": enrichment.quality.overall_score,
+                    "warnings": len(enrichment.warnings),
+                }
+            )
+    except Exception as exc:
+        failure = PageFailure(
+            run_id=run_id,
+            dataset_name=dataset_name,
+            generated_at=utc_now(),
+            document_id=bundle.document_id,
+            page_id=bundle.metadata.page_id,
+            space_key=bundle.metadata.space_key,
+            title=bundle.metadata.title,
+            source_updated_at=bundle.metadata.updated_at,
+            source_content_hash=bundle.source_content_hash,
+            stage="enrich",
+            error_type=type(exc).__name__,
+            message=str(exc),
+            retryable=False,
+            suggested_action="Inspect the source page artifact and rerun this page.",
+        )
+        result.failures.append(failure)
+        if event_callback:
+            event_callback(
+                {
+                    "event": "page_failed",
+                    "run_id": run_id,
+                    "page_id": bundle.metadata.page_id,
+                    "space_key": bundle.metadata.space_key,
+                    "title": bundle.metadata.title,
+                    "error_type": failure.error_type,
+                    "message": failure.message,
+                }
+            )
+    return result
+
+
 def enrich_command(
     *,
     config: AppConfig,
@@ -588,6 +775,8 @@ def enrich_command(
     skipped = 0
     considered = 0
     llm_calls_planned = 0
+    llm_task_calls_completed = 0
+    llm_task_calls_cached = 0
     llm_calls_started = 0
     llm_calls_completed = 0
     llm_calls_in_flight = 0
@@ -596,6 +785,10 @@ def enrich_command(
     llm_rate_limits = 0
     llm_input_tokens = 0
     llm_output_tokens = 0
+    llm_live_input_tokens = 0
+    llm_live_output_tokens = 0
+    llm_cached_input_tokens = 0
+    llm_cached_output_tokens = 0
     llm_current_task = "-"
     llm_current_page = "-"
     llm_current_chunk = "-"
@@ -659,6 +852,8 @@ def enrich_command(
                     "failed": len(context.failures),
                     "llm_retries": llm_retries_progress,
                     "llm_calls_planned": llm_calls_planned,
+                    "llm_task_calls_completed": llm_task_calls_completed,
+                    "llm_task_calls_cached": llm_task_calls_cached,
                     "llm_calls_started": llm_calls_started,
                     "llm_calls_completed": llm_calls_completed,
                     "llm_calls_in_flight": llm_calls_in_flight,
@@ -666,6 +861,13 @@ def enrich_command(
                     "llm_rate_limits": llm_rate_limits,
                     "llm_input_tokens": llm_input_tokens,
                     "llm_output_tokens": llm_output_tokens,
+                    "llm_live_input_tokens": llm_live_input_tokens,
+                    "llm_live_output_tokens": llm_live_output_tokens,
+                    "llm_cached_input_tokens": llm_cached_input_tokens,
+                    "llm_cached_output_tokens": llm_cached_output_tokens,
+                    "llm_worker_cap": worker_count if "worker_count" in locals() else 0,
+                    "llm_max_concurrency": config.llm.max_concurrency,
+                    "llm_adaptive_initial_concurrency": config.llm.adaptive_initial_concurrency,
                     "llm_current_task": llm_current_task,
                     "llm_current_page": llm_current_page,
                     "llm_current_chunk": llm_current_chunk,
@@ -678,9 +880,12 @@ def enrich_command(
 
     def llm_progress_callback(event: dict[str, Any]) -> None:
         nonlocal llm_cached_calls_progress, llm_calls_completed, llm_calls_planned
+        nonlocal llm_task_calls_completed, llm_task_calls_cached
         nonlocal llm_calls_started, llm_calls_in_flight, llm_retries_progress
         nonlocal llm_rate_limits, llm_current_page, llm_current_task
         nonlocal llm_current_chunk, llm_chunk_count
+        nonlocal llm_live_input_tokens, llm_live_output_tokens
+        nonlocal llm_cached_input_tokens, llm_cached_output_tokens
         with progress_lock:
             event_name = event.get("event")
             if event_name == "llm_plan":
@@ -688,21 +893,30 @@ def enrich_command(
                 llm_current_page = str(event.get("page_id") or "-")
                 llm_chunk_count = str(event.get("chunk_count") or "-")
             elif event_name == "llm_call_started":
-                llm_calls_started += 1
-                llm_calls_in_flight += 1
                 llm_current_task = str(event.get("task") or "-")
                 llm_current_page = str(event.get("page_id") or "-")
                 llm_current_chunk = str(event.get("chunk_index") or "-")
                 llm_chunk_count = str(event.get("chunk_count") or "-")
             elif event_name in {"llm_call_finished", "llm_call_failed"}:
-                llm_calls_completed += 1
-                llm_calls_in_flight = max(0, llm_calls_in_flight - 1)
+                llm_task_calls_completed += 1
                 if event.get("cached") is True:
                     llm_cached_calls_progress += 1
+                    llm_task_calls_cached += 1
+                    llm_cached_input_tokens += int(event.get("input_tokens") or 0)
+                    llm_cached_output_tokens += int(event.get("output_tokens") or 0)
                 llm_current_task = str(event.get("task") or "-")
                 llm_current_page = str(event.get("page_id") or "-")
                 llm_current_chunk = str(event.get("chunk_index") or "-")
                 llm_chunk_count = str(event.get("chunk_count") or "-")
+            elif event_name == "llm_provider_call_started":
+                llm_calls_started += 1
+                llm_calls_in_flight += 1
+                llm_current_task = str(event.get("task") or llm_current_task)
+            elif event_name in {"llm_provider_call_finished", "llm_provider_call_failed"}:
+                llm_calls_completed += 1
+                llm_calls_in_flight = max(0, llm_calls_in_flight - 1)
+                llm_live_input_tokens += int(event.get("input_tokens") or 0)
+                llm_live_output_tokens += int(event.get("output_tokens") or 0)
             elif event_name == "llm_retry":
                 llm_retries_progress += 1
                 if int(event.get("status_code") or 0) == 429:
@@ -718,8 +932,6 @@ def enrich_command(
             emit_progress()
 
     worker_count = max(1, config.processing.page_workers)
-    if provider is not None:
-        worker_count = max(1, min(worker_count, config.processing.llm_workers))
 
     def merge_page_result(page_result: PageProcessResult) -> None:
         nonlocal processed, skipped, considered, llm_input_tokens, llm_output_tokens
@@ -744,82 +956,117 @@ def enrich_command(
             visual_rows.extend(page_result.visual_rows)
             emit_progress()
 
-    executor = ThreadPoolExecutor(max_workers=worker_count)
-    futures = [
-        executor.submit(
-            _process_page,
-            bundle=bundle,
-            config=config,
-            provider=provider,
-            run_id=context.run_id,
-            dataset_name=dataset_name,
-            generated_at=context.generated_at,
-            dry_run=dry_run,
-            changed_only=changed_only,
-            force=force,
-            document_type_filter=document_type_filter,
-            onyx_root=onyx_root,
-            event_callback=event_callback,
-            llm_progress_callback=llm_progress_callback if provider is not None else None,
-            hierarchy=hierarchy_by_page_id.get(bundle.metadata.page_id),
-        )
-        for bundle in pages
-    ]
-    pending = set(futures)
-    merged = set()
-    try:
-        for future in as_completed(futures):
-            pending.discard(future)
-            merge_page_result(future.result())
-            merged.add(future)
-            if config.processing.fail_fast and context.failures:
-                for pending_future in pending:
-                    pending_future.cancel()
-                break
-    except KeyboardInterrupt:
-        cancelled = True
-        for pending_future in pending:
-            pending_future.cancel()
-        context.warnings.append(
-            WarningRecord(
+    if provider is not None:
+        try:
+            asyncio.run(
+                _run_enrich_pages_with_shared_llm(
+                    pages=pages,
+                    config=config,
+                    provider=provider,
+                    run_id=context.run_id,
+                    dataset_name=dataset_name,
+                    generated_at=context.generated_at,
+                    dry_run=dry_run,
+                    changed_only=changed_only,
+                    force=force,
+                    document_type_filter=document_type_filter,
+                    onyx_root=onyx_root,
+                    event_callback=event_callback,
+                    llm_progress_callback=llm_progress_callback,
+                    hierarchy_by_page_id=hierarchy_by_page_id,
+                    worker_count=worker_count,
+                    merge_page_result=merge_page_result,
+                )
+            )
+        except KeyboardInterrupt:
+            cancelled = True
+            context.warnings.append(
+                WarningRecord(
+                    run_id=context.run_id,
+                    dataset_name=dataset_name,
+                    generated_at=utc_now(),
+                    warning_type="run_cancelled",
+                    message="Cancellation requested; completed page work was preserved.",
+                    stage="enrich",
+                )
+            )
+    else:
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        futures = [
+            executor.submit(
+                _process_page,
+                bundle=bundle,
+                config=config,
+                provider=provider,
                 run_id=context.run_id,
                 dataset_name=dataset_name,
-                generated_at=utc_now(),
-                warning_type="run_cancelled",
-                message=(
-                    "Cancellation requested; pending pages were cancelled and completed "
-                    "page work was preserved."
-                ),
-                stage="enrich",
+                generated_at=context.generated_at,
+                dry_run=dry_run,
+                changed_only=changed_only,
+                force=force,
+                document_type_filter=document_type_filter,
+                onyx_root=onyx_root,
+                event_callback=event_callback,
+                llm_progress_callback=None,
+                hierarchy=hierarchy_by_page_id.get(bundle.metadata.page_id),
             )
-        )
-        if event_callback:
-            event_callback(
-                {
-                    "event": "run_cancelled",
-                    "run_id": context.run_id,
-                    "pending_pages": sum(1 for future in pending if not future.done()),
-                    "completed_pages": considered,
-                }
-            )
-    finally:
-        executor.shutdown(wait=True, cancel_futures=True)
-
-    if cancelled:
-        for future in futures:
-            if future in merged or future.cancelled() or not future.done():
-                continue
-            try:
+            for bundle in pages
+        ]
+        pending = set(futures)
+        merged = set()
+        try:
+            for future in as_completed(futures):
+                pending.discard(future)
                 merge_page_result(future.result())
                 merged.add(future)
-            except KeyboardInterrupt:
-                continue
-    else:
-        for future in futures:
-            if future in merged or future.cancelled() or not future.done():
-                continue
-            merge_page_result(future.result())
-            merged.add(future)
+                if config.processing.fail_fast and context.failures:
+                    for pending_future in pending:
+                        pending_future.cancel()
+                    break
+        except KeyboardInterrupt:
+            cancelled = True
+            for pending_future in pending:
+                pending_future.cancel()
+            context.warnings.append(
+                WarningRecord(
+                    run_id=context.run_id,
+                    dataset_name=dataset_name,
+                    generated_at=utc_now(),
+                    warning_type="run_cancelled",
+                    message=(
+                        "Cancellation requested; pending pages were cancelled and completed "
+                        "page work was preserved."
+                    ),
+                    stage="enrich",
+                )
+            )
+            if event_callback:
+                event_callback(
+                    {
+                        "event": "run_cancelled",
+                        "run_id": context.run_id,
+                        "pending_pages": sum(1 for future in pending if not future.done()),
+                        "completed_pages": considered,
+                    }
+                )
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+        if cancelled:
+            for future in futures:
+                if future in merged or future.cancelled() or not future.done():
+                    continue
+                try:
+                    merge_page_result(future.result())
+                    merged.add(future)
+                except KeyboardInterrupt:
+                    continue
+        else:
+            for future in futures:
+                if future in merged or future.cancelled() or not future.done():
+                    continue
+                merge_page_result(future.result())
+                merged.add(future)
 
     enrichments.sort(key=lambda item: (item.space_key, item.page_id))
     document_rows.sort(key=lambda item: (item.space_key, item.page_id))
@@ -914,6 +1161,18 @@ def enrich_command(
     status = "partial_success" if context.failures or cancelled else "success"
     llm_cached_calls = sum(1 for usage in context.llm_usage if usage.cached)
     llm_live_calls = len(context.llm_usage) - llm_cached_calls
+    llm_live_input_summary = sum(
+        usage.input_tokens or 0 for usage in context.llm_usage if not usage.cached
+    )
+    llm_live_output_summary = sum(
+        usage.output_tokens or 0 for usage in context.llm_usage if not usage.cached
+    )
+    llm_cached_input_summary = sum(
+        usage.input_tokens or 0 for usage in context.llm_usage if usage.cached
+    )
+    llm_cached_output_summary = sum(
+        usage.output_tokens or 0 for usage in context.llm_usage if usage.cached
+    )
     counts = {
         "pages_total": validation.pages_total,
         "pages_considered": considered,
@@ -923,9 +1182,14 @@ def enrich_command(
         "changed_pages": processed,
         "unchanged_pages": skipped,
         "warnings": len(context.warnings),
-        "llm_calls": len(context.llm_usage),
+        "llm_tasks": len(context.llm_usage),
+        "llm_calls": llm_live_calls,
         "llm_cached_calls": llm_cached_calls,
         "llm_live_calls": llm_live_calls,
+        "llm_live_input_tokens": llm_live_input_summary,
+        "llm_live_output_tokens": llm_live_output_summary,
+        "llm_cached_input_tokens": llm_cached_input_summary,
+        "llm_cached_output_tokens": llm_cached_output_summary,
         "llm_retries": context.llm_retries,
         "pages_cancelled": max(0, len(pages) - considered) if cancelled else 0,
     }
@@ -939,6 +1203,67 @@ def enrich_command(
         warnings=context.warnings,
         output_paths=output_paths,
     )
+
+
+async def _run_enrich_pages_with_shared_llm(
+    *,
+    pages: list[PageBundle],
+    config: AppConfig,
+    provider: LLMProvider,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    dry_run: bool,
+    changed_only: bool,
+    force: bool,
+    document_type_filter: str | None,
+    onyx_root: Path,
+    event_callback: Callable[[dict[str, Any]], None] | None,
+    llm_progress_callback: Callable[[dict[str, Any]], None] | None,
+    hierarchy_by_page_id: dict[str, HierarchyContext],
+    worker_count: int,
+    merge_page_result: Callable[[PageProcessResult], None],
+) -> None:
+    def shared_llm_event(event: dict[str, Any]) -> None:
+        if event_callback is not None:
+            event_callback(event)
+        if llm_progress_callback is not None:
+            llm_progress_callback(event)
+
+    llm_client = RateLimitedLLMClient(provider, config.llm, retry_callback=shared_llm_event)
+    semaphore = asyncio.Semaphore(max(1, worker_count))
+
+    async def run_page(bundle: PageBundle) -> PageProcessResult:
+        async with semaphore:
+            return await _process_page_async(
+                bundle=bundle,
+                config=config,
+                provider=provider,
+                llm_client=llm_client,
+                run_id=run_id,
+                dataset_name=dataset_name,
+                generated_at=generated_at,
+                dry_run=dry_run,
+                changed_only=changed_only,
+                force=force,
+                document_type_filter=document_type_filter,
+                onyx_root=onyx_root,
+                event_callback=event_callback,
+                llm_progress_callback=llm_progress_callback,
+                hierarchy=hierarchy_by_page_id.get(bundle.metadata.page_id),
+            )
+
+    tasks = [asyncio.create_task(run_page(bundle)) for bundle in pages]
+    try:
+        for task in asyncio.as_completed(tasks):
+            merge_page_result(await task)
+            if config.processing.fail_fast:
+                # merge_page_result owns the shared failure state; fail-fast is handled by callers.
+                pass
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
 
 def extract_visuals_command(
@@ -1253,7 +1578,12 @@ def extract_visuals_command(
             "visual_images_omitted_by_page_cap": images_omitted_by_page_cap,
             "visual_images_omitted_by_grouping": images_omitted_by_grouping,
             "visual_omitted_inventory_records": len(omitted_image_records),
+            "llm_tasks": len(context.llm_usage),
             "llm_calls": len(context.llm_usage),
+            "llm_live_calls": len(context.llm_usage),
+            "llm_cached_calls": 0,
+            "llm_live_input_tokens": sum(usage.input_tokens or 0 for usage in context.llm_usage),
+            "llm_live_output_tokens": sum(usage.output_tokens or 0 for usage in context.llm_usage),
             "llm_retries": context.llm_retries,
         },
         output_paths=output_paths,

@@ -144,6 +144,10 @@ enabled by default and reduces parallelism on `429` responses before gradually
 recovering. Leave `llm.requests_per_minute` and `llm.tokens_per_minute` unset if
 you do not know the provider quota.
 
+Live LLM dashboard rates separate provider work from cache hits. `live LLM/s`
+counts actual provider calls; `cache/s` counts local cached responses. Token rows
+show live input/output tokens separately from cached token metadata.
+
 `enrich` creates or refreshes page enrichment artifacts, global indexes, Onyx
 Markdown and reports. `report` only regenerates report Markdown from existing
 cache, knowledge, enrichment, visual and run artifacts; it does not call LLMs,

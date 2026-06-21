@@ -45,12 +45,6 @@ def _print_result(
     if quiet:
         return
     console.print(_completion_panel(result))
-    if result.output_paths:
-        console.print("[bold cyan]Outputs[/bold cyan]")
-        for path in result.output_paths[:20]:
-            console.print(f"[dim]-[/dim] {path}")
-        if len(result.output_paths) > 20:
-            console.print(f"[dim]- ... {len(result.output_paths) - 20} more[/dim]")
 
 
 def _completion_panel(result: CommandResult) -> Panel:
@@ -87,11 +81,32 @@ def _completion_panel(result: CommandResult) -> Panel:
         ),
     )
     if "llm_calls" in counts:
+        live_calls = int(counts.get("llm_live_calls", counts.get("llm_calls", 0)))
+        cached_calls = int(counts.get("llm_cached_calls", 0))
         table.add_row(
             "LLM",
-            f"calls {counts.get('llm_calls', 0):,}   retries {counts.get('llm_retries', 0):,}",
+            (
+                f"tasks {counts.get('llm_tasks', counts.get('llm_calls', 0)):,}   "
+                f"live {live_calls:,}   cached {cached_calls:,}   "
+                f"retries {counts.get('llm_retries', 0):,}"
+            ),
+        )
+        live_input = int(counts.get("llm_live_input_tokens", counts.get("llm_input_tokens", 0)))
+        live_output = int(counts.get("llm_live_output_tokens", counts.get("llm_output_tokens", 0)))
+        cached_input = int(counts.get("llm_cached_input_tokens", 0))
+        cached_output = int(counts.get("llm_cached_output_tokens", 0))
+        table.add_row(
+            "Tokens",
+            (
+                f"live in {live_input:,} out {live_output:,}   "
+                f"avg {_avg_tokens(live_input, live_calls)}/"
+                f"{_avg_tokens(live_output, live_calls)}   "
+                f"cache saved in {cached_input:,} out {cached_output:,}"
+            ),
         )
     table.add_row("Run", str(summary.outputs.get("run", "dry-run")))
+    if result.output_paths:
+        table.add_row("Outputs", _sample_output_paths(result.output_paths))
     return Panel(
         table,
         title=f"[bold cyan]{summary.command} complete[/bold cyan]",
@@ -105,6 +120,14 @@ def _styled_status(status: str) -> str:
     if status == "partial_success":
         return "[bold yellow]partial_success[/bold yellow]"
     return f"[bold red]{status}[/bold red]"
+
+
+def _sample_output_paths(paths: list[Path]) -> str:
+    samples = [str(path) for path in paths[:3]]
+    remaining = len(paths) - len(samples)
+    if remaining > 0:
+        samples.append(f"... {remaining} more")
+    return "\n".join(samples)
 
 
 def _handle_exception(
@@ -208,6 +231,12 @@ def _fmt_rate(value: float, suffix: str = "/s") -> str:
     return f"{value:.2f}{suffix}"
 
 
+def _avg_tokens(tokens: int, calls: int) -> str:
+    if calls <= 0:
+        return "-"
+    return f"{round(tokens / calls):,}"
+
+
 def _style_count(value: int, *, warn: bool = False) -> str:
     if value <= 0:
         return "[green]0[/green]"
@@ -302,11 +331,14 @@ class RunDashboard:
 
     def _enrich_rows(self, elapsed: float) -> list[tuple[str, str]]:
         considered = _snapshot_int(self.snapshot, "considered")
-        llm_done = _snapshot_int(self.snapshot, "llm_calls_completed")
+        task_done = _snapshot_int(self.snapshot, "llm_task_calls_completed")
         llm_planned = _snapshot_int(self.snapshot, "llm_calls_planned")
-        token_total = _snapshot_int(self.snapshot, "llm_input_tokens") + _snapshot_int(
-            self.snapshot, "llm_output_tokens"
-        )
+        live_calls = _snapshot_int(self.snapshot, "llm_calls_completed")
+        cached_calls = _snapshot_int(self.snapshot, "llm_task_calls_cached")
+        live_input = _snapshot_int(self.snapshot, "llm_live_input_tokens")
+        live_output = _snapshot_int(self.snapshot, "llm_live_output_tokens")
+        cached_input = _snapshot_int(self.snapshot, "llm_cached_input_tokens")
+        cached_output = _snapshot_int(self.snapshot, "llm_cached_output_tokens")
         current_task = str(self.snapshot.get("llm_current_task") or "-")
         current_page = str(self.snapshot.get("llm_current_page") or "-")
         current_chunk = str(self.snapshot.get("llm_current_chunk") or "-")
@@ -324,16 +356,26 @@ class RunDashboard:
                 "Throughput",
                 (
                     f"pages {_fmt_rate(considered / elapsed if elapsed else 0)}   "
-                    f"LLM {_fmt_rate(llm_done / elapsed if elapsed else 0)}   "
-                    f"tokens {_fmt_rate(token_total / elapsed if elapsed else 0)}"
+                    f"live LLM {_fmt_rate(live_calls / elapsed if elapsed else 0)}   "
+                    f"cache {_fmt_rate(cached_calls / elapsed if elapsed else 0)}"
                 ),
             ),
             (
                 "LLM",
                 (
-                    f"{llm_done:,} / {llm_planned:,} calls   "
+                    f"{task_done:,} / {llm_planned:,} tasks   "
+                    f"live {live_calls:,}   "
                     f"in-flight {_snapshot_int(self.snapshot, 'llm_calls_in_flight'):,}   "
-                    f"cached {_snapshot_int(self.snapshot, 'llm_cached_calls'):,}"
+                    f"cached {cached_calls:,}"
+                ),
+            ),
+            (
+                "Tokens",
+                (
+                    f"live in {live_input:,} out {live_output:,} "
+                    f"avg {_avg_tokens(live_input, live_calls)}/"
+                    f"{_avg_tokens(live_output, live_calls)}   "
+                    f"cache saved in {cached_input:,} out {cached_output:,}"
                 ),
             ),
             self._health_row(),
@@ -346,8 +388,11 @@ class RunDashboard:
 
     def _visual_rows(self, elapsed: float) -> list[tuple[str, str]]:
         images_done = _snapshot_int(self.snapshot, "images_completed")
-        llm_done = _snapshot_int(self.snapshot, "llm_calls_completed")
-        token_total = _snapshot_int(self.snapshot, "llm_input_tokens") + _snapshot_int(
+        live_calls = _snapshot_int(self.snapshot, "llm_calls_completed")
+        live_input = _snapshot_int(self.snapshot, "llm_live_input_tokens") or _snapshot_int(
+            self.snapshot, "llm_input_tokens"
+        )
+        live_output = _snapshot_int(self.snapshot, "llm_live_output_tokens") or _snapshot_int(
             self.snapshot, "llm_output_tokens"
         )
         current_page = str(self.snapshot.get("current_page") or "-")
@@ -367,16 +412,24 @@ class RunDashboard:
                 "Throughput",
                 (
                     f"images {_fmt_rate(images_done / elapsed if elapsed else 0)}   "
-                    f"LLM {_fmt_rate(llm_done / elapsed if elapsed else 0)}   "
-                    f"tokens {_fmt_rate(token_total / elapsed if elapsed else 0)}"
+                    f"live LLM {_fmt_rate(live_calls / elapsed if elapsed else 0)}   "
+                    f"tokens {_fmt_rate((live_input + live_output) / elapsed if elapsed else 0)}"
                 ),
             ),
             (
                 "LLM",
                 (
-                    f"{llm_done:,} calls   "
+                    f"{live_calls:,} calls   "
                     f"in-flight {_snapshot_int(self.snapshot, 'llm_calls_in_flight'):,}   "
                     f"cached {_snapshot_int(self.snapshot, 'images_cached'):,}"
+                ),
+            ),
+            (
+                "Tokens",
+                (
+                    f"input {live_input:,}   output {live_output:,}   "
+                    f"avg {_avg_tokens(live_input, live_calls)}/"
+                    f"{_avg_tokens(live_output, live_calls)}"
                 ),
             ),
             self._health_row(),
@@ -401,6 +454,14 @@ class RunDashboard:
     def _adaptive_row(self) -> tuple[str, str]:
         raw = self.snapshot.get("llm_adaptive_concurrency")
         if not isinstance(raw, dict) or not raw:
+            initial = _snapshot_int(self.snapshot, "llm_adaptive_initial_concurrency")
+            maximum = _snapshot_int(self.snapshot, "llm_max_concurrency")
+            worker_cap = _snapshot_int(self.snapshot, "llm_worker_cap")
+            if maximum:
+                details = f"initial {initial}/{maximum}"
+                if worker_cap:
+                    details = f"{details}   page workers {worker_cap}"
+                return "Adaptive", details
             return "Adaptive", "-"
         parts = []
         for key, value in sorted(raw.items()):
