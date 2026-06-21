@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import shutil
@@ -438,6 +439,95 @@ def test_extract_visuals_reuses_duplicate_image_hashes(
     assert artifact["images_succeeded"] == 2
     assert artifact["images"][0]["cache_hit"] is False
     assert artifact["images"][1]["cache_hit"] is True
+
+
+def test_extract_visuals_processes_pages_concurrently(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    second_page = tiny_cache / "pages" / "456"
+    shutil.copytree(tiny_cache / "pages" / "123", second_page)
+    metadata = json.loads((second_page / "metadata.json").read_text(encoding="utf-8"))
+    metadata["page_id"] = "456"
+    metadata["title"] = "Second Visual Page"
+    (second_page / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    links = json.loads((second_page / "links.json").read_text(encoding="utf-8"))
+    links["page_id"] = "456"
+    (second_page / "links.json").write_text(json.dumps(links), encoding="utf-8")
+    image_by_page = {
+        "123": base64.b64encode(generate_probe_png()).decode("ascii"),
+        "456": base64.b64encode(generate_probe_png() + b"different").decode("ascii"),
+    }
+    for page_id, image_data in image_by_page.items():
+        clean_path = tiny_cache / "pages" / page_id / "clean.md"
+        clean_path.write_text(
+            clean_path.read_text(encoding="utf-8")
+            + f"\n![Probe {page_id}](data:image/png;base64,{image_data})\n",
+            encoding="utf-8",
+        )
+    manifest_path = tiny_cache / "manifest.jsonl"
+    manifest_rows = [json.loads(line) for line in manifest_path.read_text().splitlines()]
+    second_row = dict(
+        manifest_rows[0],
+        markdown_path="pages/456/clean.md",
+        page_id="456",
+        path="pages/456",
+        title="Second Visual Page",
+    )
+    manifest_path.write_text(
+        "\n".join(json.dumps(row) for row in [manifest_rows[0], second_row]) + "\n",
+        encoding="utf-8",
+    )
+    summary_path = tiny_cache / "manifest.summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["total_pages"] = 2
+    summary["spaces"] = {"IDENTITY": 2}
+    summary["statuses"] = {"success": 2}
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    active = 0
+    max_active = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return httpx.Response(
+            200,
+            json={"output_text": json.dumps({"ocr_text": "OK", "caption": "Concurrent"})},
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "processing": {"page_workers": 2},
+            "llm": {
+                "provider": "none",
+                "max_concurrency": 2,
+                "adaptive_initial_concurrency": 2,
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["llm_calls"] == 2
+    assert max_active == 2
 
 
 def test_extract_visuals_retries_with_shared_llm_client(

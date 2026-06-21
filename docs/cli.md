@@ -158,6 +158,9 @@ Selection behavior:
 - report-like pages use an adaptive lower cap from `visual_extraction.report_page_max_images`
 - repeated dashboard/chart/report images are sampled by representative group
 - omitted images are recorded for review instead of disappearing silently
+- provider calls use bounded async concurrency and an adaptive per-model limiter
+  that reduces parallelism on `429` responses and gradually recovers after
+  successful calls
 
 Useful options:
 
@@ -168,6 +171,12 @@ Useful options:
 - `--force`: re-extract pages even when a complete artifact already exists.
 - `--dry-run`: count candidate pages/images without writing artifacts.
 - `--json --quiet`: machine-readable summary.
+
+Tune parallelism through config rather than a CLI flag. `llm.max_concurrency`
+sets the hard cap for in-flight LLM requests, while `llm.adaptive_concurrency`
+lets the client reduce per-model concurrency when a shared provider is busy. Keep
+`llm.requests_per_minute` and `llm.tokens_per_minute` unset unless you know the
+provider quota.
 
 Outputs:
 

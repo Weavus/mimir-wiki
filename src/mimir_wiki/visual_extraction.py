@@ -358,8 +358,12 @@ async def extract_visuals_for_page(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     image_cache: dict[str, VisualExtractionImage] | None = None,
     sources: list[VisualSource] | None = None,
+    endpoint: ProbeEndpoint | None = None,
+    rate_limited_client: RateLimitedLLMClient | None = None,
+    image_cache_lock: asyncio.Lock | None = None,
+    image_inflight: dict[str, asyncio.Future[VisualExtractionImage]] | None = None,
 ) -> tuple[VisualExtractionArtifact, int, list[LLMUsage], int]:
-    endpoint = build_visual_probe_endpoint(config)
+    endpoint = endpoint or build_visual_probe_endpoint(config)
     if sources is None:
         discovered_sources = discover_visual_sources(bundle)
         ranked_sources = rank_visual_sources(bundle, discovered_sources)
@@ -384,54 +388,45 @@ async def extract_visuals_for_page(
     images: list[VisualExtractionImage] = []
     usage_records: list[LLMUsage] = []
     total_retries = 0
-    async with httpx.AsyncClient(
-        timeout=config.llm.timeout_seconds, transport=llm_transport
-    ) as llm_client:
-        provider = VisualPayloadProvider(endpoint, llm_client)
-        rate_limited_client = RateLimitedLLMClient(
-            provider,
-            config.llm,
-            retry_callback=progress_callback,
+    if rate_limited_client is not None:
+        images, usage_records, total_retries = await extract_visual_sources_for_page(
+            sources=sources,
+            config=config,
+            endpoint=endpoint,
+            llm_client=rate_limited_client,
+            bundle=bundle,
+            run_id=run_id,
+            dataset_name=dataset_name,
+            generated_at=generated_at,
+            image_cache=image_cache,
+            image_cache_lock=image_cache_lock,
+            image_inflight=image_inflight,
+            progress_callback=progress_callback,
         )
-        for index, source in enumerate(sources, start=1):
-            image_id = visual_image_id(index, source)
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "event": "visual_image_started",
-                        "image_index": index,
-                        "image_total": len(sources),
-                        "image_id": image_id,
-                        "image_source_kind": source.source_kind,
-                    }
-                )
-            result = await extract_visual_source(
-                index=index,
-                source=source,
+    else:
+        async with httpx.AsyncClient(
+            timeout=config.llm.timeout_seconds, transport=llm_transport
+        ) as llm_client:
+            provider = VisualPayloadProvider(endpoint, llm_client)
+            page_rate_limited_client = RateLimitedLLMClient(
+                provider,
+                config.llm,
+                retry_callback=progress_callback,
+            )
+            images, usage_records, total_retries = await extract_visual_sources_for_page(
+                sources=sources,
                 config=config,
                 endpoint=endpoint,
-                llm_client=rate_limited_client,
+                llm_client=page_rate_limited_client,
                 bundle=bundle,
                 run_id=run_id,
                 dataset_name=dataset_name,
                 generated_at=generated_at,
                 image_cache=image_cache,
+                image_cache_lock=image_cache_lock,
+                image_inflight=image_inflight,
+                progress_callback=progress_callback,
             )
-            image = result.image
-            images.append(image)
-            if result.usage is not None:
-                usage_records.append(result.usage)
-            total_retries += result.retries
-            if progress_callback is not None:
-                progress_callback(
-                    {
-                        "event": "visual_image_finished",
-                        "image_index": index,
-                        "image_total": len(sources),
-                        "image_id": image.image_id,
-                        "image_status": image.status,
-                    }
-                )
     succeeded = sum(1 for image in images if image.status == "success")
     failed = sum(1 for image in images if image.status == "failed")
     skipped = sum(1 for image in images if image.status == "skipped")
@@ -463,6 +458,74 @@ async def extract_visuals_for_page(
     return artifact, 0, usage_records, total_retries
 
 
+async def extract_visual_sources_for_page(
+    *,
+    sources: list[VisualSource],
+    config: AppConfig,
+    endpoint: ProbeEndpoint,
+    llm_client: RateLimitedLLMClient,
+    bundle: PageBundle,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    image_cache: dict[str, VisualExtractionImage] | None = None,
+    image_cache_lock: asyncio.Lock | None = None,
+    image_inflight: dict[str, asyncio.Future[VisualExtractionImage]] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[VisualExtractionImage], list[LLMUsage], int]:
+    async def run_source(index: int, source: VisualSource) -> tuple[int, VisualSourceResult]:
+        image_id = visual_image_id(index, source)
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "visual_image_started",
+                    "image_index": index,
+                    "image_total": len(sources),
+                    "image_id": image_id,
+                    "image_source_kind": source.source_kind,
+                }
+            )
+        result = await extract_visual_source(
+            index=index,
+            source=source,
+            config=config,
+            endpoint=endpoint,
+            llm_client=llm_client,
+            bundle=bundle,
+            run_id=run_id,
+            dataset_name=dataset_name,
+            generated_at=generated_at,
+            image_cache=image_cache,
+            image_cache_lock=image_cache_lock,
+            image_inflight=image_inflight,
+        )
+        image = result.image
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "visual_image_finished",
+                    "image_index": index,
+                    "image_total": len(sources),
+                    "image_id": image.image_id,
+                    "image_status": image.status,
+                }
+            )
+        return index, result
+
+    completed = await asyncio.gather(
+        *(run_source(index, source) for index, source in enumerate(sources, start=1))
+    )
+    images: list[VisualExtractionImage] = []
+    usage_records: list[LLMUsage] = []
+    total_retries = 0
+    for _index, result in sorted(completed, key=lambda item: item[0]):
+        images.append(result.image)
+        if result.usage is not None:
+            usage_records.append(result.usage)
+        total_retries += result.retries
+    return images, usage_records, total_retries
+
+
 async def extract_visual_source(
     *,
     index: int,
@@ -475,6 +538,8 @@ async def extract_visual_source(
     dataset_name: str,
     generated_at: str,
     image_cache: dict[str, VisualExtractionImage] | None = None,
+    image_cache_lock: asyncio.Lock | None = None,
+    image_inflight: dict[str, asyncio.Future[VisualExtractionImage]] | None = None,
 ) -> VisualSourceResult:
     image_id = visual_image_id(index, source)
     if source.source_kind == "url":
@@ -531,7 +596,20 @@ async def extract_visual_source(
                 prompt_version=config.visual_extraction.prompt_version,
             )
         )
-    cached_image = image_cache.get(source_hash) if image_cache is not None else None
+    cached_image: VisualExtractionImage | None = None
+    in_flight_future: asyncio.Future[VisualExtractionImage] | None = None
+    owns_inflight = False
+    if image_cache is not None and image_cache_lock is not None and image_inflight is not None:
+        async with image_cache_lock:
+            cached_image = image_cache.get(source_hash)
+            if cached_image is None:
+                in_flight_future = image_inflight.get(source_hash)
+                if in_flight_future is None:
+                    in_flight_future = asyncio.get_running_loop().create_future()
+                    image_inflight[source_hash] = in_flight_future
+                    owns_inflight = True
+    elif image_cache is not None:
+        cached_image = image_cache.get(source_hash)
     if cached_image is not None:
         return VisualSourceResult(
             image=cached_image.model_copy(
@@ -542,6 +620,20 @@ async def extract_visual_source(
                     "mime_type": mime_type,
                     "content_sha256": source_hash,
                     "cache_hit": True,
+                }
+            )
+        )
+    if in_flight_future is not None and not owns_inflight:
+        cached_image = await in_flight_future
+        return VisualSourceResult(
+            image=cached_image.model_copy(
+                update={
+                    "image_id": image_id,
+                    "source": source.source,
+                    "source_kind": source.source_kind,
+                    "mime_type": mime_type,
+                    "content_sha256": source_hash,
+                    "cache_hit": cached_image.status == "success",
                 }
             )
         )
@@ -565,21 +657,23 @@ async def extract_visual_source(
         )
     except LLMError as exc:
         error_type = f"http_{exc.status_code}" if exc.status_code is not None else exc.error_type
-        return VisualSourceResult(
-            VisualExtractionImage(
-                image_id=image_id,
-                source=source.source,
-                source_kind=source.source_kind,
-                mime_type=mime_type,
-                content_sha256=source_hash,
-                status="failed",
-                error_type=error_type,
-                error=str(exc)[:1000],
-                provider=endpoint.provider,
-                model=endpoint.model,
-                prompt_version=config.visual_extraction.prompt_version,
-            )
+        image = VisualExtractionImage(
+            image_id=image_id,
+            source=source.source,
+            source_kind=source.source_kind,
+            mime_type=mime_type,
+            content_sha256=source_hash,
+            status="failed",
+            error_type=error_type,
+            error=str(exc)[:1000],
+            provider=endpoint.provider,
+            model=endpoint.model,
+            prompt_version=config.visual_extraction.prompt_version,
         )
+        await finish_image_inflight(
+            source_hash, image, image_cache, image_cache_lock, image_inflight, owns_inflight
+        )
+        return VisualSourceResult(image)
     elapsed_ms = round((time.monotonic() - started) * 1000)
     text = response.text
     parsed = parse_visual_response(text)
@@ -587,22 +681,23 @@ async def extract_visual_source(
     caption = parsed.get("caption", "")
     confidence = parsed.get("confidence")
     if not ocr_text and not caption:
-        return VisualSourceResult(
-            VisualExtractionImage(
-                image_id=image_id,
-                source=source.source,
-                source_kind=source.source_kind,
-                mime_type=mime_type,
-                content_sha256=source_hash,
-                status="failed",
-                error_type="empty_extraction",
-                error=text[:1000],
-                provider=endpoint.provider,
-                model=endpoint.model,
-                prompt_version=config.visual_extraction.prompt_version,
-            ),
-            retries=retries,
+        image = VisualExtractionImage(
+            image_id=image_id,
+            source=source.source,
+            source_kind=source.source_kind,
+            mime_type=mime_type,
+            content_sha256=source_hash,
+            status="failed",
+            error_type="empty_extraction",
+            error=text[:1000],
+            provider=endpoint.provider,
+            model=endpoint.model,
+            prompt_version=config.visual_extraction.prompt_version,
         )
+        await finish_image_inflight(
+            source_hash, image, image_cache, image_cache_lock, image_inflight, owns_inflight
+        )
+        return VisualSourceResult(image, retries=retries)
     image = VisualExtractionImage(
         image_id=image_id,
         source=source.source,
@@ -617,8 +712,9 @@ async def extract_visual_source(
         model=response.model,
         prompt_version=config.visual_extraction.prompt_version,
     )
-    if image_cache is not None:
-        image_cache[source_hash] = image
+    await finish_image_inflight(
+        source_hash, image, image_cache, image_cache_lock, image_inflight, owns_inflight
+    )
     return VisualSourceResult(
         image=image,
         usage=LLMUsage(
@@ -642,6 +738,27 @@ async def extract_visual_source(
         ),
         retries=retries,
     )
+
+
+async def finish_image_inflight(
+    source_hash: str,
+    image: VisualExtractionImage,
+    image_cache: dict[str, VisualExtractionImage] | None,
+    image_cache_lock: asyncio.Lock | None,
+    image_inflight: dict[str, asyncio.Future[VisualExtractionImage]] | None,
+    owns_inflight: bool,
+) -> None:
+    if image_cache_lock is not None:
+        async with image_cache_lock:
+            if image_cache is not None and image.status == "success":
+                image_cache[source_hash] = image
+            if owns_inflight and image_inflight is not None:
+                future = image_inflight.pop(source_hash, None)
+                if future is not None and not future.done():
+                    future.set_result(image)
+        return
+    if image_cache is not None and image.status == "success":
+        image_cache[source_hash] = image
 
 
 def build_visual_probe_endpoint(config: AppConfig) -> ProbeEndpoint:

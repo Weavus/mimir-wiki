@@ -89,6 +89,13 @@ class LLMConfig(BaseModel):
     max_concurrency: int = 4
     requests_per_minute: int | None = None
     tokens_per_minute: int | None = None
+    adaptive_concurrency: bool = True
+    adaptive_initial_concurrency: int = 4
+    adaptive_min_concurrency: int = 1
+    adaptive_increase_after_successes: int = 20
+    adaptive_decrease_factor_on_429: float = 0.5
+    adaptive_cooldown_seconds_on_429: float = 0
+    adaptive_max_cooldown_seconds: float = 120
     max_retries: int = 3
     initial_backoff_seconds: float = 1
     max_backoff_seconds: float = 60

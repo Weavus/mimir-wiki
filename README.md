@@ -138,6 +138,12 @@ provider calls, applies lower adaptive caps to report-like pages, samples repeat
 dashboard/chart groups, and writes omitted-source details to
 `runs/{run_id}/visual_omitted_images.jsonl`.
 
+Visual extraction sends OCR requests concurrently through the shared LLM client.
+The hard in-flight cap is `llm.max_concurrency`; adaptive per-model concurrency is
+enabled by default and reduces parallelism on `429` responses before gradually
+recovering. Leave `llm.requests_per_minute` and `llm.tokens_per_minute` unset if
+you do not know the provider quota.
+
 `enrich` creates or refreshes page enrichment artifacts, global indexes, Onyx
 Markdown and reports. `report` only regenerates report Markdown from existing
 cache, knowledge, enrichment, visual and run artifacts; it does not call LLMs,

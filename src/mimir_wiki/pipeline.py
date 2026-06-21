@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -8,6 +9,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+import httpx
 from pydantic import ValidationError
 
 from mimir_wiki.cache_reader import CacheReader, PageBundle
@@ -22,7 +24,7 @@ from mimir_wiki.constants import (
 from mimir_wiki.enrichers.deterministic import enrich_page, refreshed_for_run, signature_matches
 from mimir_wiki.enrichers.llm import apply_llm_enrichment, enabled_llm_tasks
 from mimir_wiki.hierarchy import build_hierarchy_context, build_tree_counts
-from mimir_wiki.llm.base import LLMError, LLMProvider, provider_for_config
+from mimir_wiki.llm.base import LLMError, LLMProvider, RateLimitedLLMClient, provider_for_config
 from mimir_wiki.reports import (
     VisualReportPage,
     write_cache_validation_report,
@@ -36,18 +38,21 @@ from mimir_wiki.schemas import (
     PageFailure,
     QualityScoreRow,
     RunSummary,
+    VisualExtractionArtifact,
     VisualExtractionImage,
     VisualIndexRow,
     WarningRecord,
 )
 from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, new_run_id, utc_now
 from mimir_wiki.visual_extraction import (
+    VisualPayloadProvider,
     VisualSource,
+    build_visual_probe_endpoint,
     discover_visual_sources,
     effective_visual_page_cap,
+    extract_visuals_for_page,
     load_visual_extraction,
     rank_visual_sources,
-    run_extract_visuals_for_page,
     select_visual_sources,
     visual_extraction_path,
     visual_source_content_sha256,
@@ -84,6 +89,13 @@ class CommandResult:
         data["warnings"] = [warning.model_dump(mode="json") for warning in self.warnings]
         data["output_paths"] = [str(path) for path in self.output_paths]
         return data
+
+
+@dataclass(frozen=True)
+class VisualExtractionPlan:
+    index: int
+    bundle: PageBundle
+    sources: list[VisualSource]
 
 
 @dataclass
@@ -926,6 +938,7 @@ def extract_visuals_command(
     pages_adaptive_capped = 0
     images_omitted_by_grouping = 0
     omitted_image_records: list[dict[str, Any]] = []
+    extraction_plans: list[VisualExtractionPlan] = []
 
     def emit_progress(
         *,
@@ -1035,59 +1048,59 @@ def extract_visuals_command(
             emit_progress(current_page=current_page, current_status="planned")
             continue
 
-        def image_progress_callback(event: dict[str, Any], *, page_id: str = current_page) -> None:
-            status = str(event.get("event") or "visual_image")
-            image_id = str(event.get("image_id") or "-")
-            emit_progress(
-                current_page=page_id,
-                current_image=image_id,
-                current_status=status,
-            )
+        extraction_plans.append(
+            VisualExtractionPlan(index=len(extraction_plans), bundle=bundle, sources=sources)
+        )
 
-        try:
-            artifact, files_written, usage_records, retries = run_extract_visuals_for_page(
-                bundle=bundle,
+    if extraction_plans and not dry_run:
+        extraction_results = asyncio.run(
+            _run_visual_extraction_plans(
+                plans=extraction_plans,
                 config=config,
                 run_id=context.run_id,
                 dataset_name=dataset_name,
                 generated_at=context.generated_at,
-                dry_run=False,
                 llm_transport=llm_transport,
-                progress_callback=image_progress_callback,
                 image_cache=image_cache,
-                sources=sources,
+                progress_callback=emit_progress,
             )
-        except Exception as exc:
-            context.page_failure(
-                bundle=bundle,
-                stage="extract-visuals",
-                error_type=type(exc).__name__,
-                message=str(exc),
-                suggested_action=(
-                    "Check visual extraction provider credentials and source image access."
-                ),
-            )
-            images_failed += len(sources)
-            emit_progress(current_page=current_page, current_status="failed")
-            continue
-        processed += 1
-        context.files_written += files_written
-        context.llm_usage.extend(usage_records)
-        context.llm_retries += retries
-        images_extracted += artifact.images_succeeded
-        images_failed += artifact.images_failed
-        images_skipped += artifact.images_skipped
-        path = visual_extraction_path(bundle)
-        output_paths.append(path)
-        _artifact_event(
-            event_callback,
-            run_id=context.run_id,
-            artifact_type="visual_extraction",
-            path=path,
-            page_id=bundle.metadata.page_id,
-            space_key=bundle.metadata.space_key,
         )
-        emit_progress(current_page=current_page, current_status=artifact.status)
+        for plan, result in sorted(extraction_results, key=lambda item: item[0].index):
+            bundle = plan.bundle
+            if isinstance(result, Exception):
+                exc = result
+                context.page_failure(
+                    bundle=bundle,
+                    stage="extract-visuals",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    suggested_action=(
+                        "Check visual extraction provider credentials and source image access."
+                    ),
+                )
+                images_failed += len(plan.sources)
+                emit_progress(current_page=bundle.metadata.page_id, current_status="failed")
+                continue
+            artifact, files_written, usage_records, retries = result
+            processed += 1
+            context.files_written += files_written
+            context.llm_usage.extend(usage_records)
+            context.llm_retries += retries
+            images_extracted += artifact.images_succeeded
+            images_failed += artifact.images_failed
+            images_skipped += artifact.images_skipped
+            path = visual_extraction_path(bundle)
+            output_paths.append(path)
+            _artifact_event(
+                event_callback,
+                run_id=context.run_id,
+                artifact_type="visual_extraction",
+                path=path,
+                page_id=bundle.metadata.page_id,
+                space_key=bundle.metadata.space_key,
+            )
+            emit_progress(current_page=bundle.metadata.page_id, current_status=artifact.status)
+
     emit_progress(current_status="done")
     output_paths.sort(key=lambda path: str(path))
     if omitted_image_records and not dry_run:
@@ -1142,6 +1155,78 @@ def extract_visuals_command(
         warnings=context.warnings,
         output_paths=output_paths,
     )
+
+
+async def _run_visual_extraction_plans(
+    *,
+    plans: list[VisualExtractionPlan],
+    config: AppConfig,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    llm_transport: Any | None,
+    image_cache: dict[str, VisualExtractionImage],
+    progress_callback: Callable[..., None],
+) -> list[
+    tuple[
+        VisualExtractionPlan,
+        tuple[VisualExtractionArtifact, int, list[LLMUsage], int] | Exception,
+    ]
+]:
+    endpoint = build_visual_probe_endpoint(config)
+    page_semaphore = asyncio.Semaphore(max(1, config.processing.page_workers))
+    image_cache_lock = asyncio.Lock()
+    image_inflight: dict[str, asyncio.Future[VisualExtractionImage]] = {}
+    async with httpx.AsyncClient(
+        timeout=config.llm.timeout_seconds, transport=llm_transport
+    ) as http_client:
+        provider = VisualPayloadProvider(endpoint, http_client)
+        rate_limited_client = RateLimitedLLMClient(
+            provider,
+            config.llm,
+            retry_callback=lambda event: progress_callback(
+                current_status=str(event.get("event") or "llm_event")
+            ),
+        )
+
+        async def run_plan(
+            plan: VisualExtractionPlan,
+        ) -> tuple[
+            VisualExtractionPlan,
+            tuple[VisualExtractionArtifact, int, list[LLMUsage], int] | Exception,
+        ]:
+            async with page_semaphore:
+
+                def image_progress_callback(event: dict[str, Any]) -> None:
+                    status = str(event.get("event") or "visual_image")
+                    image_id = str(event.get("image_id") or "-")
+                    progress_callback(
+                        current_page=plan.bundle.metadata.page_id,
+                        current_image=image_id,
+                        current_status=status,
+                    )
+
+                try:
+                    result = await extract_visuals_for_page(
+                        bundle=plan.bundle,
+                        config=config,
+                        run_id=run_id,
+                        dataset_name=dataset_name,
+                        generated_at=generated_at,
+                        dry_run=False,
+                        progress_callback=image_progress_callback,
+                        image_cache=image_cache,
+                        image_cache_lock=image_cache_lock,
+                        image_inflight=image_inflight,
+                        sources=plan.sources,
+                        endpoint=endpoint,
+                        rate_limited_client=rate_limited_client,
+                    )
+                except Exception as exc:  # pragma: no cover - exercised through command path
+                    return plan, exc
+                return plan, result
+
+        return list(await asyncio.gather(*(run_plan(plan) for plan in plans)))
 
 
 def _build_visual_image_cache(pages: list[PageBundle]) -> dict[str, VisualExtractionImage]:

@@ -46,6 +46,24 @@ class BadRequestProvider:
         )
 
 
+class TokenUsageProvider:
+    provider_name = "token-usage"
+
+    def __init__(self, usages: list[tuple[int, int]]) -> None:
+        self.usages = usages
+        self.calls = 0
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        input_tokens, output_tokens = self.usages[self.calls]
+        self.calls += 1
+        return LLMResponse(
+            text="ok",
+            model=request.model or "mock",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+
 async def _complete_with_flaky() -> tuple[str, int, int, int]:
     provider = FlakyProvider()
     client = RateLimitedLLMClient(
@@ -107,9 +125,41 @@ def test_rate_limited_client_emits_retry_events() -> None:
         )
 
     asyncio.run(run())
-    assert len(events) == 2
-    assert events[0]["event"] == "llm_retry"
-    assert events[0]["document_id"] == "doc-1"
+    retry_events = [event for event in events if event["event"] == "llm_retry"]
+    assert len(retry_events) == 2
+    assert retry_events[0]["document_id"] == "doc-1"
+
+
+def test_rate_limited_client_reduces_adaptive_concurrency_on_429() -> None:
+    events = []
+    provider = FlakyProvider()
+
+    async def run() -> None:
+        client = RateLimitedLLMClient(
+            provider,
+            LLMConfig(
+                max_concurrency=4,
+                adaptive_initial_concurrency=4,
+                adaptive_min_concurrency=1,
+                adaptive_decrease_factor_on_429=0.5,
+                max_retries=3,
+                initial_backoff_seconds=0,
+                max_backoff_seconds=0,
+                provider="openai",
+                model="mock",
+            ),
+            retry_callback=events.append,
+        )
+        await client.complete(
+            LLMRequest(task="summary", prompt="x", document_id="doc-1", model="mock")
+        )
+
+    asyncio.run(run())
+    adaptive_events = [event for event in events if event["event"] == "llm_adaptive_concurrency"]
+    assert adaptive_events
+    assert adaptive_events[0]["adaptive_event"] == "concurrency_decreased"
+    assert adaptive_events[0]["old_concurrency"] == 4
+    assert adaptive_events[0]["new_concurrency"] == 2
 
 
 def test_rate_limited_client_does_not_retry_non_retryable_errors() -> None:
@@ -119,6 +169,55 @@ def test_rate_limited_client_does_not_retry_non_retryable_errors() -> None:
         assert exc.status_code == 400
     else:  # pragma: no cover
         raise AssertionError("expected LLMError")
+
+
+def test_rate_limited_client_ignores_token_limit_when_unset() -> None:
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    async def run() -> None:
+        client = RateLimitedLLMClient(
+            TokenUsageProvider([(100, 25), (100, 25)]),
+            LLMConfig(provider="openai", model="mock"),
+            sleep_func=fake_sleep,
+        )
+        await client.complete(LLMRequest(task="summary", prompt="x", model="mock"))
+        await client.complete(LLMRequest(task="summary", prompt="x", model="mock"))
+
+    asyncio.run(run())
+    assert sleep_calls == []
+
+
+def test_rate_limited_client_enforces_tokens_per_minute_from_actual_usage() -> None:
+    clock = 1000.0
+    sleep_calls: list[float] = []
+
+    def fake_monotonic() -> float:
+        return clock
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal clock
+        sleep_calls.append(seconds)
+        clock += seconds
+
+    async def run() -> None:
+        client = RateLimitedLLMClient(
+            TokenUsageProvider([(9, 0), (1, 0)]),
+            LLMConfig(provider="openai", model="mock", tokens_per_minute=10),
+            monotonic=fake_monotonic,
+            sleep_func=fake_sleep,
+        )
+        await client.complete(
+            LLMRequest(task="summary", prompt="x", model="mock", estimated_tokens=1)
+        )
+        await client.complete(
+            LLMRequest(task="summary", prompt="x", model="mock", estimated_tokens=2)
+        )
+
+    asyncio.run(run())
+    assert sleep_calls == [60]
 
 
 async def _complete_with_mock_transport(

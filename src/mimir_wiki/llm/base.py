@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -48,6 +49,7 @@ class LLMRequest:
     model: str | None = None
     prompt_version: str | None = None
     payload: dict[str, Any] | None = None
+    estimated_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,21 @@ class LLMResponse:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached: bool = False
+
+
+@dataclass
+class _TokenReservation:
+    timestamp: float
+    tokens: int
+
+
+@dataclass
+class _AdaptiveConcurrencyState:
+    current_limit: int
+    in_flight: int = 0
+    successes_since_increase: int = 0
+    cooldown_until: float = 0
+    cooldown_seconds: float = 0
 
 
 class LLMProvider(Protocol):
@@ -256,11 +273,19 @@ class RateLimitedLLMClient:
         provider: LLMProvider,
         config: LLMConfig,
         retry_callback: Callable[[dict[str, Any]], None] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        sleep_func: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self.provider = provider
         self.config = config
         self._semaphore = asyncio.Semaphore(max(1, config.max_concurrency))
         self._request_timestamps: list[float] = []
+        self._token_reservations: list[_TokenReservation] = []
+        self._adaptive_states: dict[str, _AdaptiveConcurrencyState] = {}
+        self._adaptive_condition = asyncio.Condition()
+        self._rate_lock = asyncio.Lock()
+        self._monotonic = monotonic or time.monotonic
+        self._sleep = sleep_func or asyncio.sleep
         self.retry_callback = retry_callback
 
     async def complete(self, request: LLMRequest) -> tuple[LLMResponse, int, int]:
@@ -269,34 +294,194 @@ class RateLimitedLLMClient:
         async with self._semaphore:
             while True:
                 attempts += 1
-                await self._respect_request_limit()
+                model_key = self._model_key(request)
+                await self._acquire_adaptive_slot(model_key)
+                async with self._rate_lock:
+                    await self._respect_request_limit()
+                    token_reservation = await self._respect_token_limit(request)
                 try:
                     response = await asyncio.wait_for(
                         self.provider.complete(request), timeout=self.config.timeout_seconds
                     )
+                    await self._release_adaptive_slot(model_key, success=True)
+                    self._record_actual_token_usage(token_reservation, response)
                     return response, attempts, retries
                 except TimeoutError as exc:
                     error = LLMError("LLM request timed out", retryable=True, error_type="timeout")
+                    await self._release_adaptive_slot(model_key, error=error)
                     if not self._should_retry(error, attempts):
                         raise error from exc
                     retries += 1
                     await self._sleep_for_retry(error, attempts, request)
                 except LLMError as exc:
+                    await self._release_adaptive_slot(model_key, error=exc)
                     if not self._should_retry(exc, attempts):
                         raise
                     retries += 1
                     await self._sleep_for_retry(exc, attempts, request)
 
+    def _model_key(self, request: LLMRequest) -> str:
+        return f"{self.provider.provider_name}:{request.model or self.config.model}"
+
+    def _adaptive_state(self, model_key: str) -> _AdaptiveConcurrencyState:
+        state = self._adaptive_states.get(model_key)
+        if state is not None:
+            return state
+        max_limit = max(1, self.config.max_concurrency)
+        initial_limit = min(max_limit, max(1, self.config.adaptive_initial_concurrency))
+        state = _AdaptiveConcurrencyState(
+            current_limit=initial_limit,
+            cooldown_seconds=max(0, self.config.adaptive_cooldown_seconds_on_429),
+        )
+        self._adaptive_states[model_key] = state
+        return state
+
+    async def _acquire_adaptive_slot(self, model_key: str) -> None:
+        if not self.config.adaptive_concurrency:
+            return
+        while True:
+            sleep_for: float | None = None
+            async with self._adaptive_condition:
+                state = self._adaptive_state(model_key)
+                now = self._monotonic()
+                if state.cooldown_until > now:
+                    sleep_for = state.cooldown_until - now
+                elif state.in_flight < state.current_limit:
+                    state.in_flight += 1
+                    return
+                else:
+                    await self._adaptive_condition.wait()
+                    continue
+            if sleep_for is not None:
+                await self._sleep(max(0, sleep_for))
+
+    async def _release_adaptive_slot(
+        self,
+        model_key: str,
+        *,
+        success: bool = False,
+        error: LLMError | None = None,
+    ) -> None:
+        if not self.config.adaptive_concurrency:
+            return
+        async with self._adaptive_condition:
+            state = self._adaptive_state(model_key)
+            state.in_flight = max(0, state.in_flight - 1)
+            if success:
+                self._record_adaptive_success(model_key, state)
+            elif error is not None:
+                self._record_adaptive_error(model_key, state, error)
+            self._adaptive_condition.notify_all()
+
+    def _record_adaptive_success(self, model_key: str, state: _AdaptiveConcurrencyState) -> None:
+        max_limit = max(1, self.config.max_concurrency)
+        if state.current_limit >= max_limit:
+            return
+        state.successes_since_increase += 1
+        threshold = max(1, self.config.adaptive_increase_after_successes)
+        if state.successes_since_increase < threshold:
+            return
+        old_limit = state.current_limit
+        state.current_limit = min(max_limit, state.current_limit + 1)
+        state.successes_since_increase = 0
+        state.cooldown_seconds = max(0, self.config.adaptive_cooldown_seconds_on_429)
+        self._emit_adaptive_event(model_key, "concurrency_increased", old_limit, state)
+
+    def _record_adaptive_error(
+        self, model_key: str, state: _AdaptiveConcurrencyState, error: LLMError
+    ) -> None:
+        if error.status_code != 429 and error.error_type not in {"rate_limit", "http_429"}:
+            return
+        old_limit = state.current_limit
+        min_limit = max(1, self.config.adaptive_min_concurrency)
+        decrease_factor = min(1, max(0.1, self.config.adaptive_decrease_factor_on_429))
+        state.current_limit = max(min_limit, int(state.current_limit * decrease_factor))
+        state.successes_since_increase = 0
+        now = self._monotonic()
+        base_cooldown = max(0, self.config.adaptive_cooldown_seconds_on_429)
+        if error.retry_after is not None:
+            cooldown = max(0, error.retry_after)
+        else:
+            cooldown = state.cooldown_seconds or base_cooldown
+        cooldown = min(max(0, self.config.adaptive_max_cooldown_seconds), cooldown)
+        state.cooldown_until = max(state.cooldown_until, now + cooldown)
+        state.cooldown_seconds = min(
+            max(0, self.config.adaptive_max_cooldown_seconds),
+            max(base_cooldown, cooldown * 2 if cooldown else base_cooldown),
+        )
+        self._emit_adaptive_event(model_key, "concurrency_decreased", old_limit, state)
+
+    def _emit_adaptive_event(
+        self,
+        model_key: str,
+        event: str,
+        old_limit: int,
+        state: _AdaptiveConcurrencyState,
+    ) -> None:
+        if self.retry_callback is None or old_limit == state.current_limit:
+            return
+        self.retry_callback(
+            {
+                "event": "llm_adaptive_concurrency",
+                "adaptive_event": event,
+                "provider": self.provider.provider_name,
+                "model_key": model_key,
+                "old_concurrency": old_limit,
+                "new_concurrency": state.current_limit,
+                "cooldown_until": round(state.cooldown_until, 3),
+            }
+        )
+
     async def _respect_request_limit(self) -> None:
         rpm = self.config.requests_per_minute
         if not rpm:
             return
-        now = time.monotonic()
+        now = self._monotonic()
         self._request_timestamps = [stamp for stamp in self._request_timestamps if now - stamp < 60]
         if len(self._request_timestamps) >= rpm:
             sleep_for = 60 - (now - self._request_timestamps[0])
-            await asyncio.sleep(max(0, sleep_for))
-        self._request_timestamps.append(time.monotonic())
+            await self._sleep(max(0, sleep_for))
+            now = self._monotonic()
+            self._request_timestamps = [
+                stamp for stamp in self._request_timestamps if now - stamp < 60
+            ]
+        self._request_timestamps.append(self._monotonic())
+
+    async def _respect_token_limit(self, request: LLMRequest) -> _TokenReservation | None:
+        tpm = self.config.tokens_per_minute
+        if not tpm:
+            return None
+        estimated_tokens = estimate_request_tokens(request)
+        if estimated_tokens <= 0:
+            return None
+        now = self._monotonic()
+        self._token_reservations = [
+            reservation
+            for reservation in self._token_reservations
+            if now - reservation.timestamp < 60
+        ]
+        reserved_tokens = sum(reservation.tokens for reservation in self._token_reservations)
+        if self._token_reservations and reserved_tokens + estimated_tokens > tpm:
+            sleep_for = 60 - (now - self._token_reservations[0].timestamp)
+            await self._sleep(max(0, sleep_for))
+            now = self._monotonic()
+            self._token_reservations = [
+                reservation
+                for reservation in self._token_reservations
+                if now - reservation.timestamp < 60
+            ]
+        reservation = _TokenReservation(timestamp=self._monotonic(), tokens=estimated_tokens)
+        self._token_reservations.append(reservation)
+        return reservation
+
+    def _record_actual_token_usage(
+        self, reservation: _TokenReservation | None, response: LLMResponse
+    ) -> None:
+        if reservation is None:
+            return
+        if response.input_tokens is None and response.output_tokens is None:
+            return
+        reservation.tokens = max(0, (response.input_tokens or 0) + (response.output_tokens or 0))
 
     def _should_retry(self, error: LLMError, attempts: int) -> bool:
         if attempts > self.config.max_retries:
@@ -333,7 +518,37 @@ class RateLimitedLLMClient:
                     "sleep_seconds": round(delay, 3),
                 }
             )
-        await asyncio.sleep(delay)
+        await self._sleep(delay)
+
+
+def estimate_request_tokens(request: LLMRequest) -> int:
+    if request.estimated_tokens is not None:
+        return max(0, request.estimated_tokens)
+    text_parts = [request.prompt]
+    if request.payload:
+        text_parts.extend(_payload_text_values(request.payload))
+    text = "\n".join(part for part in text_parts if part)
+    if not text:
+        return 1
+    return max(1, math.ceil(len(text) / 4))
+
+
+def _payload_text_values(value: Any, *, parent_key: str = "") -> list[str]:
+    if isinstance(value, dict):
+        values: list[str] = []
+        for key, item in value.items():
+            values.extend(_payload_text_values(item, parent_key=str(key)))
+        return values
+    if isinstance(value, list):
+        values = []
+        for item in value:
+            values.extend(_payload_text_values(item, parent_key=parent_key))
+        return values
+    if not isinstance(value, str):
+        return []
+    if parent_key in {"image_url", "url"} and value.startswith("data:image/"):
+        return []
+    return [value]
 
 
 def _required_env(env_name: str | None, description: str) -> str:

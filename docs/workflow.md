@@ -128,6 +128,9 @@ Visual source selection is deterministic and auditable:
 - repeated dashboard/chart/report visuals are sampled by representative group
 - omitted images are written to `runs/{run_id}/visual_omitted_images.jsonl` with
   page, source, hash when available, selection score, nearby heading and reason
+- live visual OCR calls run through the shared LLM client with bounded async
+  concurrency; concurrency is tracked per provider/model and is reduced when
+  `429` rate limits are observed, then increased gradually after successful calls
 
 Useful visual extraction config defaults:
 
@@ -140,7 +143,20 @@ visual_extraction:
   report_page_max_images: 12
   representative_group_sampling: true
   max_images_per_representative_group: 3
+
+llm:
+  max_concurrency: 4
+  requests_per_minute: null
+  tokens_per_minute: null
+  adaptive_concurrency: true
+  adaptive_initial_concurrency: 4
+  adaptive_min_concurrency: 1
 ```
+
+Leave `requests_per_minute` and `tokens_per_minute` unset when provider limits
+are unknown. The adaptive limiter still reacts to provider `429` responses by
+reducing only the affected provider/model concurrency and honoring `Retry-After`
+when present.
 
 Skipped remote images need triage by source type:
 

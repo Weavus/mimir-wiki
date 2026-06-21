@@ -3788,7 +3788,8 @@ the longer-term design intent above.
 - [x] LLM provider abstraction for `none`, OpenAI, Azure OpenAI, Azure AI
   Foundry and OpenAI-compatible endpoints.
 - [x] Shared retrying/rate-limited LLM client with timeouts, bounded retries,
-  jitter, retry-after handling and mocked-provider tests.
+  jitter, retry-after handling, optional token-per-minute throttling, adaptive
+  per-model concurrency on `429` responses and mocked-provider tests.
 - [x] LLM response cache keyed by source hash, prompt text/version, provider,
   model, task or bundle and enrichment config hash.
 - [x] Task-specific model routing and task bundles.
@@ -3798,7 +3799,8 @@ the longer-term design intent above.
   key facts, prioritized source links, redaction and visual evidence sections.
 - [x] `extract-visuals` multimodal OCR/caption workflow over local cache images,
   including source ranking, hash reuse, low-value skips, adaptive caps,
-  representative visual sampling and omitted image inventories.
+  representative visual sampling, concurrent page/image execution and omitted
+  image inventories.
 - [x] `probe-ocr` multimodal capability check.
 - [x] Reports for validation, enrichment summary, document types,
   stale/deprecated pages, high-value sources, missing owners, high-value
@@ -3814,7 +3816,7 @@ the longer-term design intent above.
   files instead of marking them `remote_source_not_in_cache`.
 - [x] Add explicit `claim_type` to candidate facts where practical so later
   source-authority checks can reason about claim-specific evidence strength.
-- [ ] Enforce `llm.tokens_per_minute` in `RateLimitedLLMClient`; request-per-
+- [x] Enforce `llm.tokens_per_minute` in `RateLimitedLLMClient`; request-per-
   minute limiting already exists.
 - [ ] Decide whether `processing.writer_workers` needs a real writer queue or
   should be removed from MVP config until needed.
