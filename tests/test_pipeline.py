@@ -548,6 +548,63 @@ def test_extract_visuals_resolves_urls_to_local_attachments(
     assert artifact["images"][0]["source_kind"] == "file"
 
 
+def test_extract_visuals_resolves_cross_page_attachment_urls(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    other_attachment_path = tiny_cache / "pages" / "456" / "attachments" / "shared diagram.png"
+    other_attachment_path.parent.mkdir(parents=True)
+    other_attachment_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![Shared](https://confluence.example.com/download/attachments/456/shared%20diagram.png?api=v2)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["input"][0]["content"][1]["image_url"].startswith("data:image/png")
+        return httpx.Response(
+            200,
+            json={"output_text": json.dumps({"ocr_text": "CROSS PAGE", "caption": "Shared"})},
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert calls == 1
+    assert artifact["status"] == "complete"
+    assert artifact["images"][0]["source"] == str(other_attachment_path)
+    assert artifact["images"][0]["source_kind"] == "file"
+
+
 def test_extract_visuals_skips_remote_images_not_in_cache(
     tiny_cache: Path, tmp_path: Path, monkeypatch
 ) -> None:
@@ -588,6 +645,51 @@ def test_extract_visuals_skips_remote_images_not_in_cache(
     artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
     assert artifact["status"] == "skipped"
     assert artifact["images"][0]["status"] == "skipped"
+    assert artifact["images"][0]["error_type"] == "remote_source_not_in_cache"
+
+
+def test_extract_visuals_skips_missing_cross_page_attachment_urls(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![Missing](https://confluence.example.com/download/attachments/456/missing.png?api=v2)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("missing cross-page attachment should not be sent to the provider")
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert artifact["status"] == "skipped"
+    assert artifact["images"][0]["status"] == "skipped"
+    assert artifact["images"][0]["source_kind"] == "url"
     assert artifact["images"][0]["error_type"] == "remote_source_not_in_cache"
 
 

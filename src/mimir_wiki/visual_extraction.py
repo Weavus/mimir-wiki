@@ -26,6 +26,9 @@ from mimir_wiki.utils import atomic_write_json, load_json, utc_now
 
 IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+CONFLUENCE_ATTACHMENT_PATH_RE = re.compile(
+    r"(?:^|/)download/attachments/(?P<page_id>\d+)/(?P<filename>[^/?#]+)"
+)
 
 
 @dataclass(frozen=True)
@@ -860,17 +863,33 @@ def mime_type_for(name: str) -> str | None:
 
 
 def local_attachment_for_url(bundle: PageBundle, source: str) -> Path | None:
-    if not bundle.paths.attachments.exists():
-        return None
     parsed = urlparse(source)
     filename = Path(unquote(parsed.path)).name
     if not filename:
         return None
-    exact = bundle.paths.attachments / filename
+    local_path = find_attachment_by_name(bundle.paths.attachments, filename)
+    if local_path is not None:
+        return local_path
+    attachment_match = CONFLUENCE_ATTACHMENT_PATH_RE.search(unquote(parsed.path))
+    if attachment_match is None:
+        return None
+    target_page_id = attachment_match.group("page_id")
+    target_filename = Path(attachment_match.group("filename")).name
+    if not target_filename:
+        return None
+    pages_dir = bundle.paths.root.parent
+    target_attachments = pages_dir / target_page_id / "attachments"
+    return find_attachment_by_name(target_attachments, target_filename)
+
+
+def find_attachment_by_name(attachments_dir: Path, filename: str) -> Path | None:
+    if not attachments_dir.exists():
+        return None
+    exact = attachments_dir / filename
     if exact.exists() and exact.is_file():
         return exact
     lowered = filename.lower()
-    for path in bundle.paths.attachments.iterdir():
+    for path in attachments_dir.iterdir():
         if path.is_file() and path.name.lower() == lowered:
             return path
     return None

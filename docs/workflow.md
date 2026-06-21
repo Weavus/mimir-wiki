@@ -103,11 +103,14 @@ Boundary rule: `mimir-wiki` never connects to Confluence to fetch source images.
 It only reads local cache evidence produced by `mimir-confluence`:
 
 - downloaded image files under `pages/{page_id}/attachments/`
-- Markdown image URLs that resolve to those local attachment filenames
+- Markdown image URLs that resolve to local attachment filenames, including
+  Confluence `/download/attachments/{page_id}/...` URLs for other pages already
+  present in the same cache
 - embedded `data:image/...` references in `clean.md`
 
 If a remote image URL is present in `clean.md` but the corresponding file is not
-available under `attachments/`, extraction records that image as skipped with
+available in the current page's attachments or another exported page's
+attachments, extraction records that image as skipped with
 `remote_source_not_in_cache`. Rerun `mimir-confluence` with attachment export
 enabled for pages where the missing image is important.
 
@@ -141,10 +144,10 @@ visual_extraction:
 
 Skipped remote images need triage by source type:
 
-- Confluence `/download/attachments/{page_id}/...` URLs usually mean the image
-  belongs to another Confluence page or was embedded from another page. These
-  should be collected by `mimir-confluence` only if that linked/embedded page is
-  in scope and attachment download/materialization supports it.
+- Confluence `/download/attachments/{page_id}/...` URLs are resolved against the
+  matching page's local `attachments/` directory when that page exists in the
+  same cache. Remaining skips usually mean the linked/embedded page is outside
+  the export or the attachment was not downloaded.
 - Confluence `/download/attachments/embedded-page/{space}/{title}/...` URLs are
   embedded-page attachments. Same-space embedded pages may be recoverable by
   expanding the crawl or improving embedded-page attachment handling.

@@ -133,16 +133,19 @@ download source images. Downloading attachments is `mimir-confluence`'s job.
 `extract-visuals` only processes:
 
 - image files already downloaded under `pages/{page_id}/attachments/`
-- Markdown image references that resolve to those local attachment files
+- Markdown image references that resolve to local attachment files, including
+  Confluence `/download/attachments/{page_id}/...` URLs for other pages already
+  present in the same cache
 - embedded `data:image/...` references already present in `clean.md`
 
 Remote image URLs that do not resolve to local cache attachments are recorded in
 `visual_extraction.json` as skipped with `error_type: remote_source_not_in_cache`.
-These can be Confluence-hosted attachment URLs, Confluence plugin/generated
-image URLs, or completely external URLs. Rerun `mimir-confluence` with attachment
-export enabled, and with embedded/linked-page attachment handling if available,
-when the missing Confluence-hosted visuals are important. External URLs require
-separate source-system support; `mimir-wiki` intentionally does not fetch them.
+These can be Confluence-hosted attachment URLs outside the local cache,
+Confluence plugin/generated image URLs, or completely external URLs. Rerun
+`mimir-confluence` with attachment export enabled, and with embedded/linked-page
+attachment handling if available, when the missing Confluence-hosted visuals are
+important. External URLs require separate source-system support; `mimir-wiki`
+intentionally does not fetch them.
 
 Selection behavior:
 

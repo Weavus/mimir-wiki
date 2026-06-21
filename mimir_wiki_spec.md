@@ -3809,7 +3809,7 @@ the longer-term design intent above.
 
 ### 30.2 Outstanding MVP Hardening
 
-- [ ] Resolve Confluence image URLs that point to attachments already downloaded
+- [x] Resolve Confluence image URLs that point to attachments already downloaded
   under other exported page folders, so visual extraction can reuse those local
   files instead of marking them `remote_source_not_in_cache`.
 - [ ] Add explicit `claim_type` to candidate facts where practical so later

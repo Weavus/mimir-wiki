@@ -120,8 +120,10 @@ CacheReader
 
 `mimir-wiki` does not fetch source images from Confluence or arbitrary remote
 URLs. If `clean.md` contains a Confluence image URL, visual extraction resolves
-that URL to a matching local file in `pages/{page_id}/attachments/`. If the file
-is absent, the image is recorded as skipped with
+that URL to a matching local file in the current page's attachments, or in
+another exported page's `pages/{page_id}/attachments/` directory for
+`/download/attachments/{page_id}/...` URLs. If the file is absent, the image is
+recorded as skipped with
 `remote_source_not_in_cache`. Attachment download and source-system access remain
 the responsibility of `mimir-confluence`.
 
