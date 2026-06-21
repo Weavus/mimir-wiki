@@ -576,10 +576,19 @@ def enrich_command(
     skipped = 0
     considered = 0
     llm_calls_planned = 0
+    llm_calls_started = 0
     llm_calls_completed = 0
+    llm_calls_in_flight = 0
     llm_cached_calls_progress = 0
+    llm_retries_progress = 0
+    llm_rate_limits = 0
+    llm_input_tokens = 0
+    llm_output_tokens = 0
     llm_current_task = "-"
     llm_current_page = "-"
+    llm_current_chunk = "-"
+    llm_chunk_count = "-"
+    llm_adaptive_concurrency: dict[str, dict[str, int | float]] = {}
     output_paths: list[Path] = []
     knowledge_dir = Path(config.paths.knowledge)
     onyx_root = Path(config.paths.dist_onyx_enriched)
@@ -636,12 +645,20 @@ def enrich_command(
                     "processed": processed,
                     "skipped": skipped,
                     "failed": len(context.failures),
-                    "llm_retries": context.llm_retries,
+                    "llm_retries": llm_retries_progress,
                     "llm_calls_planned": llm_calls_planned,
+                    "llm_calls_started": llm_calls_started,
                     "llm_calls_completed": llm_calls_completed,
+                    "llm_calls_in_flight": llm_calls_in_flight,
                     "llm_cached_calls": llm_cached_calls_progress,
+                    "llm_rate_limits": llm_rate_limits,
+                    "llm_input_tokens": llm_input_tokens,
+                    "llm_output_tokens": llm_output_tokens,
                     "llm_current_task": llm_current_task,
                     "llm_current_page": llm_current_page,
+                    "llm_current_chunk": llm_current_chunk,
+                    "llm_chunk_count": llm_chunk_count,
+                    "llm_adaptive_concurrency": dict(llm_adaptive_concurrency),
                 }
             )
 
@@ -649,21 +666,43 @@ def enrich_command(
 
     def llm_progress_callback(event: dict[str, Any]) -> None:
         nonlocal llm_cached_calls_progress, llm_calls_completed, llm_calls_planned
-        nonlocal llm_current_page, llm_current_task
+        nonlocal llm_calls_started, llm_calls_in_flight, llm_retries_progress
+        nonlocal llm_rate_limits, llm_current_page, llm_current_task
+        nonlocal llm_current_chunk, llm_chunk_count
         with progress_lock:
             event_name = event.get("event")
             if event_name == "llm_plan":
                 llm_calls_planned += int(event.get("calls_planned") or 0)
                 llm_current_page = str(event.get("page_id") or "-")
+                llm_chunk_count = str(event.get("chunk_count") or "-")
             elif event_name == "llm_call_started":
+                llm_calls_started += 1
+                llm_calls_in_flight += 1
                 llm_current_task = str(event.get("task") or "-")
                 llm_current_page = str(event.get("page_id") or "-")
+                llm_current_chunk = str(event.get("chunk_index") or "-")
+                llm_chunk_count = str(event.get("chunk_count") or "-")
             elif event_name in {"llm_call_finished", "llm_call_failed"}:
                 llm_calls_completed += 1
+                llm_calls_in_flight = max(0, llm_calls_in_flight - 1)
                 if event.get("cached") is True:
                     llm_cached_calls_progress += 1
                 llm_current_task = str(event.get("task") or "-")
                 llm_current_page = str(event.get("page_id") or "-")
+                llm_current_chunk = str(event.get("chunk_index") or "-")
+                llm_chunk_count = str(event.get("chunk_count") or "-")
+            elif event_name == "llm_retry":
+                llm_retries_progress += 1
+                if int(event.get("status_code") or 0) == 429:
+                    llm_rate_limits += 1
+                llm_current_task = str(event.get("task") or llm_current_task)
+            elif event_name == "llm_adaptive_concurrency":
+                model_key = str(event.get("model_key") or "-")
+                llm_adaptive_concurrency[model_key] = {
+                    "current": int(event.get("new_concurrency") or 0),
+                    "max": config.llm.max_concurrency,
+                    "cooldown_seconds": 0,
+                }
             emit_progress()
 
     worker_count = max(1, config.processing.page_workers)
@@ -671,13 +710,15 @@ def enrich_command(
         worker_count = max(1, min(worker_count, config.processing.llm_workers))
 
     def merge_page_result(page_result: PageProcessResult) -> None:
-        nonlocal processed, skipped, considered
+        nonlocal processed, skipped, considered, llm_input_tokens, llm_output_tokens
         with progress_lock:
             considered += 1
             processed += page_result.processed
             skipped += page_result.skipped
             context.files_written += page_result.files_written
             context.llm_retries += page_result.llm_retries
+            llm_input_tokens += sum(usage.input_tokens or 0 for usage in page_result.llm_usage)
+            llm_output_tokens += sum(usage.output_tokens or 0 for usage in page_result.llm_usage)
             context.failures.extend(page_result.failures)
             context.warnings.extend(page_result.warnings)
             context.llm_usage.extend(page_result.llm_usage)
@@ -933,6 +974,18 @@ def extract_visuals_command(
     images_extracted = 0
     images_failed = 0
     images_skipped = 0
+    images_started = 0
+    images_completed = 0
+    images_in_flight = 0
+    images_cached = 0
+    llm_calls_started = 0
+    llm_calls_completed = 0
+    llm_calls_in_flight = 0
+    llm_retries_progress = 0
+    llm_rate_limits = 0
+    llm_input_tokens = 0
+    llm_output_tokens = 0
+    llm_adaptive_concurrency: dict[str, dict[str, int | float]] = {}
     images_omitted_by_page_cap = 0
     pages_capped = 0
     pages_adaptive_capped = 0
@@ -945,7 +998,40 @@ def extract_visuals_command(
         current_page: str = "-",
         current_image: str = "-",
         current_status: str = "-",
+        event: dict[str, Any] | None = None,
     ) -> None:
+        nonlocal images_started, images_completed, images_in_flight, images_cached
+        nonlocal llm_calls_started, llm_calls_completed, llm_calls_in_flight
+        nonlocal llm_retries_progress, llm_rate_limits, llm_input_tokens, llm_output_tokens
+        if event is not None:
+            event_name = str(event.get("event") or "")
+            if event_name == "visual_image_started":
+                images_started += 1
+                images_in_flight += 1
+            elif event_name == "visual_image_finished":
+                images_completed += 1
+                images_in_flight = max(0, images_in_flight - 1)
+                if event.get("cache_hit") is True:
+                    images_cached += 1
+            elif event_name == "visual_llm_call_started":
+                llm_calls_started += 1
+                llm_calls_in_flight += 1
+            elif event_name in {"visual_llm_call_finished", "visual_llm_call_failed"}:
+                llm_calls_completed += 1
+                llm_calls_in_flight = max(0, llm_calls_in_flight - 1)
+                llm_input_tokens += int(event.get("input_tokens") or 0)
+                llm_output_tokens += int(event.get("output_tokens") or 0)
+            elif event_name == "llm_retry":
+                llm_retries_progress += 1
+                if int(event.get("status_code") or 0) == 429:
+                    llm_rate_limits += 1
+            elif event_name == "llm_adaptive_concurrency":
+                model_key = str(event.get("model_key") or "-")
+                llm_adaptive_concurrency[model_key] = {
+                    "current": int(event.get("new_concurrency") or 0),
+                    "max": config.llm.max_concurrency,
+                    "cooldown_seconds": 0,
+                }
         if progress_callback is None:
             return
         progress_callback(
@@ -960,6 +1046,18 @@ def extract_visuals_command(
                 "images_extracted": images_extracted,
                 "images_failed": images_failed,
                 "images_skipped": images_skipped,
+                "images_started": images_started,
+                "images_completed": images_completed,
+                "images_in_flight": images_in_flight,
+                "images_cached": images_cached,
+                "llm_calls_started": llm_calls_started,
+                "llm_calls_completed": llm_calls_completed,
+                "llm_calls_in_flight": llm_calls_in_flight,
+                "llm_retries": llm_retries_progress,
+                "llm_rate_limits": llm_rate_limits,
+                "llm_input_tokens": llm_input_tokens,
+                "llm_output_tokens": llm_output_tokens,
+                "llm_adaptive_concurrency": dict(llm_adaptive_concurrency),
                 "current_page": current_page,
                 "current_image": current_image,
                 "current_status": current_status,
@@ -1185,7 +1283,8 @@ async def _run_visual_extraction_plans(
             provider,
             config.llm,
             retry_callback=lambda event: progress_callback(
-                current_status=str(event.get("event") or "llm_event")
+                current_status=str(event.get("event") or "llm_event"),
+                event=event,
             ),
         )
 
@@ -1204,6 +1303,7 @@ async def _run_visual_extraction_plans(
                         current_page=plan.bundle.metadata.page_id,
                         current_image=image_id,
                         current_status=status,
+                        event=event,
                     )
 
                 try:

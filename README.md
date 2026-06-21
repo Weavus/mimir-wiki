@@ -171,6 +171,10 @@ Common options:
 - `--verbose`: include tracebacks for unexpected errors.
 - `--log-file PATH`: write JSONL command, page, retry, cancellation, and artifact events.
 
+Interactive `enrich` and `extract-visuals` runs show a live dashboard with ETA,
+throughput, in-flight LLM calls, retry/rate-limit health, adaptive concurrency
+state and current work. Use `--json` and `--quiet` for script-friendly output.
+
 `enrich` options:
 
 - `--provider none|openai|azure-openai|azure-ai-foundry|openai-compatible`: select the LLM provider. Use `none` for deterministic local runs.

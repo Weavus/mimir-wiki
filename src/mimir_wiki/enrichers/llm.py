@@ -317,7 +317,13 @@ async def _apply_llm_enrichment_async(
     event_callback: Callable[[dict[str, Any]], None] | None,
     progress_callback: Callable[[dict[str, Any]], None] | None,
 ) -> LLMEnrichmentResult:
-    client = RateLimitedLLMClient(provider, config.llm, retry_callback=event_callback)
+    def llm_client_event(event: dict[str, Any]) -> None:
+        if event_callback is not None:
+            event_callback(event)
+        if progress_callback is not None:
+            progress_callback(event)
+
+    client = RateLimitedLLMClient(provider, config.llm, retry_callback=llm_client_event)
     result = LLMEnrichmentResult(enrichment=enrichment)
     chunks, truncated = chunk_text(bundle.text, config)
     if progress_callback:

@@ -241,6 +241,11 @@ page-level work, while live LLM calls are bounded by `llm.max_concurrency` and
 the adaptive per-model limiter. `processing.writer_workers` remains in config as
 a reserved future knob; MVP artifact writing is synchronous and deterministic.
 
+Interactive `enrich` and `extract-visuals` runs show a live dashboard with
+progress, ETA, throughput, in-flight LLM calls, retries, `429` rate limits,
+adaptive concurrency state and current work. Non-interactive modes such as
+`--json`, `--quiet`, CI and redirected output remain script-friendly.
+
 ## LLM Cache And Changed-Only
 
 LLM responses are cached under `paths.llm_cache`, defaulting to

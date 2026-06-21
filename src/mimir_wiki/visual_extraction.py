@@ -498,6 +498,7 @@ async def extract_visual_sources_for_page(
             image_cache=image_cache,
             image_cache_lock=image_cache_lock,
             image_inflight=image_inflight,
+            progress_callback=progress_callback,
         )
         image = result.image
         if progress_callback is not None:
@@ -508,6 +509,7 @@ async def extract_visual_sources_for_page(
                     "image_total": len(sources),
                     "image_id": image.image_id,
                     "image_status": image.status,
+                    "cache_hit": image.cache_hit,
                 }
             )
         return index, result
@@ -540,6 +542,7 @@ async def extract_visual_source(
     image_cache: dict[str, VisualExtractionImage] | None = None,
     image_cache_lock: asyncio.Lock | None = None,
     image_inflight: dict[str, asyncio.Future[VisualExtractionImage]] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> VisualSourceResult:
     image_id = visual_image_id(index, source)
     if source.source_kind == "url":
@@ -645,6 +648,14 @@ async def extract_visual_source(
     )
     started = time.monotonic()
     try:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "visual_llm_call_started",
+                    "image_id": image_id,
+                    "page_id": bundle.metadata.page_id,
+                }
+            )
         response, attempts, retries = await llm_client.complete(
             LLMRequest(
                 task="visual_ocr",
@@ -656,6 +667,16 @@ async def extract_visual_source(
             )
         )
     except LLMError as exc:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "visual_llm_call_failed",
+                    "image_id": image_id,
+                    "page_id": bundle.metadata.page_id,
+                    "status_code": exc.status_code,
+                    "error_type": exc.error_type,
+                }
+            )
         error_type = f"http_{exc.status_code}" if exc.status_code is not None else exc.error_type
         image = VisualExtractionImage(
             image_id=image_id,
@@ -675,6 +696,16 @@ async def extract_visual_source(
         )
         return VisualSourceResult(image)
     elapsed_ms = round((time.monotonic() - started) * 1000)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "event": "visual_llm_call_finished",
+                "image_id": image_id,
+                "page_id": bundle.metadata.page_id,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+            }
+        )
     text = response.text
     parsed = parse_visual_response(text)
     ocr_text = parsed.get("ocr_text", "")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import traceback
 from pathlib import Path
 from threading import Lock
@@ -8,8 +9,12 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
+from rich.progress_bar import ProgressBar
 from rich.table import Table
+from rich.text import Text
 
 from mimir_wiki.config import AppConfig, apply_runtime_overrides, load_config
 from mimir_wiki.constants import EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USER_ERROR
@@ -123,6 +128,248 @@ def _snapshot_int(snapshot: dict[str, object], key: str, default: int = 0) -> in
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return default
+
+
+def _snapshot_float(snapshot: dict[str, object], key: str, default: float = 0) -> float:
+    value = snapshot.get(key, default)
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _fmt_duration(seconds: float | None) -> str:
+    if seconds is None or seconds <= 0:
+        return "-"
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _fmt_rate(value: float, suffix: str = "/s") -> str:
+    if value <= 0:
+        return "-"
+    if value >= 1000:
+        return f"{value / 1000:.1f}k{suffix}"
+    if value >= 10:
+        return f"{value:.1f}{suffix}"
+    return f"{value:.2f}{suffix}"
+
+
+def _style_count(value: int, *, warn: bool = False) -> str:
+    if value <= 0:
+        return "[green]0[/green]"
+    return f"[yellow]{value}[/yellow]" if warn else f"[cyan]{value}[/cyan]"
+
+
+class RunDashboard:
+    def __init__(
+        self,
+        *,
+        command: str,
+        dataset: str,
+        provider: str,
+        model: str,
+        primary_unit: str,
+        console: Console,
+    ) -> None:
+        self.command = command
+        self.dataset = dataset
+        self.provider = provider
+        self.model = model
+        self.primary_unit = primary_unit
+        self.console = console
+        self.started_at = time.monotonic()
+        self.snapshot: dict[str, object] = {}
+
+    def update(self, snapshot: dict[str, object]) -> None:
+        self.snapshot.update(snapshot)
+
+    def render(self) -> Panel:
+        elapsed = time.monotonic() - self.started_at
+        primary_done, primary_total = self._primary_progress()
+        percent = (primary_done / primary_total * 100) if primary_total else 0
+        eta = self._eta(elapsed, primary_done, primary_total)
+        table = Table.grid(expand=True)
+        table.add_column("group", style="bold cyan", no_wrap=True, width=11)
+        table.add_column("value", ratio=1)
+        table.add_row(
+            "Progress",
+            (
+                f"[bold]{primary_done:,} / {primary_total:,}[/bold] {self.primary_unit}   "
+                f"[cyan]{percent:.1f}%[/cyan]   ETA [dim]{_fmt_duration(eta)}[/dim]   "
+                f"Elapsed [dim]{_fmt_duration(elapsed)}[/dim]"
+            ),
+        )
+        for row in self._work_rows(elapsed):
+            table.add_row(*row)
+        table.add_row(
+            "",
+            ProgressBar(total=100, completed=max(0, min(100, percent)), width=None),
+        )
+        header = Text.assemble(
+            (self.dataset, "bold"),
+            "  ",
+            (self.provider, "blue"),
+            " · ",
+            (self.model, "blue"),
+        )
+        return Panel(
+            table,
+            title=f"[bold cyan]{self.command}[/bold cyan]",
+            subtitle=header,
+            border_style="cyan",
+        )
+
+    def _primary_progress(self) -> tuple[int, int]:
+        if self.command == "extract-visuals":
+            done = _snapshot_int(self.snapshot, "images_completed")
+            if done == 0:
+                done = (
+                    _snapshot_int(self.snapshot, "images_extracted")
+                    + _snapshot_int(self.snapshot, "images_failed")
+                    + _snapshot_int(self.snapshot, "images_skipped")
+                )
+            total = _snapshot_int(self.snapshot, "images_considered") or _snapshot_int(
+                self.snapshot, "images_discovered"
+            )
+            return done, max(1, total)
+        return _snapshot_int(self.snapshot, "considered"), max(
+            1, _snapshot_int(self.snapshot, "total")
+        )
+
+    def _eta(self, elapsed: float, done: int, total: int) -> float | None:
+        if done <= 0 or total <= done:
+            return None
+        return elapsed / done * (total - done)
+
+    def _work_rows(self, elapsed: float) -> list[tuple[str, str]]:
+        if self.command == "extract-visuals":
+            return self._visual_rows(elapsed)
+        return self._enrich_rows(elapsed)
+
+    def _enrich_rows(self, elapsed: float) -> list[tuple[str, str]]:
+        considered = _snapshot_int(self.snapshot, "considered")
+        llm_done = _snapshot_int(self.snapshot, "llm_calls_completed")
+        llm_planned = _snapshot_int(self.snapshot, "llm_calls_planned")
+        token_total = _snapshot_int(self.snapshot, "llm_input_tokens") + _snapshot_int(
+            self.snapshot, "llm_output_tokens"
+        )
+        current_task = str(self.snapshot.get("llm_current_task") or "-")
+        current_page = str(self.snapshot.get("llm_current_page") or "-")
+        current_chunk = str(self.snapshot.get("llm_current_chunk") or "-")
+        chunk_count = str(self.snapshot.get("llm_chunk_count") or "-")
+        return [
+            (
+                "Work",
+                (
+                    f"processed {_snapshot_int(self.snapshot, 'processed'):,}   "
+                    f"skipped {_snapshot_int(self.snapshot, 'skipped'):,}   "
+                    f"failed {_style_count(_snapshot_int(self.snapshot, 'failed'), warn=True)}"
+                ),
+            ),
+            (
+                "Throughput",
+                (
+                    f"pages {_fmt_rate(considered / elapsed if elapsed else 0)}   "
+                    f"LLM {_fmt_rate(llm_done / elapsed if elapsed else 0)}   "
+                    f"tokens {_fmt_rate(token_total / elapsed if elapsed else 0)}"
+                ),
+            ),
+            (
+                "LLM",
+                (
+                    f"{llm_done:,} / {llm_planned:,} calls   "
+                    f"in-flight {_snapshot_int(self.snapshot, 'llm_calls_in_flight'):,}   "
+                    f"cached {_snapshot_int(self.snapshot, 'llm_cached_calls'):,}"
+                ),
+            ),
+            self._health_row(),
+            self._adaptive_row(),
+            (
+                "Current",
+                f"{current_task}   page {current_page}   chunk {current_chunk}/{chunk_count}",
+            ),
+        ]
+
+    def _visual_rows(self, elapsed: float) -> list[tuple[str, str]]:
+        images_done = _snapshot_int(self.snapshot, "images_completed")
+        llm_done = _snapshot_int(self.snapshot, "llm_calls_completed")
+        token_total = _snapshot_int(self.snapshot, "llm_input_tokens") + _snapshot_int(
+            self.snapshot, "llm_output_tokens"
+        )
+        current_page = str(self.snapshot.get("current_page") or "-")
+        current_image = str(self.snapshot.get("current_image") or "-")
+        current_status = str(self.snapshot.get("current_status") or "-")
+        return [
+            (
+                "Pages",
+                (
+                    f"{_snapshot_int(self.snapshot, 'processed'):,} / "
+                    f"{_snapshot_int(self.snapshot, 'considered'):,} done   "
+                    f"skipped {_snapshot_int(self.snapshot, 'skipped'):,}   "
+                    f"failed {_style_count(_snapshot_int(self.snapshot, 'failed'), warn=True)}"
+                ),
+            ),
+            (
+                "Throughput",
+                (
+                    f"images {_fmt_rate(images_done / elapsed if elapsed else 0)}   "
+                    f"LLM {_fmt_rate(llm_done / elapsed if elapsed else 0)}   "
+                    f"tokens {_fmt_rate(token_total / elapsed if elapsed else 0)}"
+                ),
+            ),
+            (
+                "LLM",
+                (
+                    f"{llm_done:,} calls   "
+                    f"in-flight {_snapshot_int(self.snapshot, 'llm_calls_in_flight'):,}   "
+                    f"cached {_snapshot_int(self.snapshot, 'images_cached'):,}"
+                ),
+            ),
+            self._health_row(),
+            self._adaptive_row(),
+            ("Current", f"{current_status}   page {current_page}   image {current_image}"),
+        ]
+
+    def _health_row(self) -> tuple[str, str]:
+        failures = _snapshot_int(self.snapshot, "failed") + _snapshot_int(
+            self.snapshot, "images_failed"
+        )
+        return (
+            "Health",
+            (
+                f"retries {_style_count(_snapshot_int(self.snapshot, 'llm_retries'), warn=True)}   "
+                f"429s "
+                f"{_style_count(_snapshot_int(self.snapshot, 'llm_rate_limits'), warn=True)}   "
+                f"failures {_style_count(failures, warn=True)}"
+            ),
+        )
+
+    def _adaptive_row(self) -> tuple[str, str]:
+        raw = self.snapshot.get("llm_adaptive_concurrency")
+        if not isinstance(raw, dict) or not raw:
+            return "Adaptive", "-"
+        parts = []
+        for key, value in sorted(raw.items()):
+            if not isinstance(value, dict):
+                continue
+            model = key.split(":")[-1]
+            current = value.get("current", "-")
+            maximum = value.get("max", "-")
+            cooldown = _snapshot_float(value, "cooldown_seconds")
+            suffix = f" cooldown {_fmt_duration(cooldown)}" if cooldown > 0 else ""
+            parts.append(f"{model} {current}/{maximum}{suffix}")
+        return "Adaptive", "   ".join(parts) if parts else "-"
 
 
 def _load_runtime_config(
@@ -319,50 +566,21 @@ def enrich(
             onyx_out=onyx_out,
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            progress = Progress(
-                TextColumn("[bold blue]enrich"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TextColumn(
-                    "processed={task.fields[processed]} skipped={task.fields[skipped]} "
-                    "failed={task.fields[failed]} llm={task.fields[llm_done]}/"
-                    "{task.fields[llm_total]} cached={task.fields[llm_cached]} "
-                    "retries={task.fields[retries]} current={task.fields[current]}"
-                ),
-                TimeElapsedColumn(),
+            dashboard = RunDashboard(
+                command="enrich",
+                dataset=cache.name,
+                provider=config.llm.provider,
+                model="mixed"
+                if config.llm.task_models or config.llm.task_bundles
+                else config.llm.model,
+                primary_unit="pages",
                 console=console,
             )
-            with progress:
-                task_id = progress.add_task(
-                    "pages",
-                    total=1,
-                    processed=0,
-                    skipped=0,
-                    failed=0,
-                    retries=0,
-                    llm_done=0,
-                    llm_total=0,
-                    llm_cached=0,
-                    current="-",
-                )
+            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    current_task = str(snapshot.get("llm_current_task") or "-")
-                    current_page = str(snapshot.get("llm_current_page") or "-")
-                    current = "-" if current_task == "-" else f"{current_task}:{current_page}"
-                    progress.update(
-                        task_id,
-                        total=max(1, _snapshot_int(snapshot, "total", 1)),
-                        completed=_snapshot_int(snapshot, "considered"),
-                        processed=_snapshot_int(snapshot, "processed"),
-                        skipped=_snapshot_int(snapshot, "skipped"),
-                        failed=_snapshot_int(snapshot, "failed"),
-                        retries=_snapshot_int(snapshot, "llm_retries"),
-                        llm_done=_snapshot_int(snapshot, "llm_calls_completed"),
-                        llm_total=_snapshot_int(snapshot, "llm_calls_planned"),
-                        llm_cached=_snapshot_int(snapshot, "llm_cached_calls"),
-                        current=current,
-                    )
+                    dashboard.update(snapshot)
+                    live.update(dashboard.render())
 
                 result = enrich_command(
                     config=config,
@@ -452,60 +670,19 @@ def extract_visuals(
         data["visual_extraction"]["model"] = model
         config = AppConfig.model_validate(data)
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            progress = Progress(
-                TextColumn("[bold blue]extract-visuals"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TextColumn(
-                    "candidates={task.fields[candidates]} processed={task.fields[processed]} "
-                    "skipped={task.fields[skipped]} failed={task.fields[failed]} "
-                    "images={task.fields[images_done]}/{task.fields[images_total]} "
-                    "img_skipped={task.fields[images_skipped]} current={task.fields[current]}"
-                ),
-                TimeElapsedColumn(),
+            dashboard = RunDashboard(
+                command="extract-visuals",
+                dataset=cache.name,
+                provider=config.visual_extraction.provider,
+                model=config.visual_extraction.model,
+                primary_unit="images",
                 console=console,
             )
-            with progress:
-                task_id = progress.add_task(
-                    "pages",
-                    total=1,
-                    candidates=0,
-                    processed=0,
-                    skipped=0,
-                    failed=0,
-                    images_done=0,
-                    images_total=0,
-                    images_skipped=0,
-                    current="-",
-                )
+            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    current_page = str(snapshot.get("current_page") or "-")
-                    current_image = str(snapshot.get("current_image") or "-")
-                    current_status = str(snapshot.get("current_status") or "-")
-                    current = current_page
-                    if current_image != "-":
-                        current = f"{current_page}:{current_image}"
-                    if current_status != "-":
-                        current = f"{current}:{current_status}"
-                    images_done = (
-                        _snapshot_int(snapshot, "images_extracted")
-                        + _snapshot_int(snapshot, "images_failed")
-                        + _snapshot_int(snapshot, "images_skipped")
-                    )
-                    progress.update(
-                        task_id,
-                        total=max(1, _snapshot_int(snapshot, "total", 1)),
-                        completed=_snapshot_int(snapshot, "scanned"),
-                        candidates=_snapshot_int(snapshot, "considered"),
-                        processed=_snapshot_int(snapshot, "processed"),
-                        skipped=_snapshot_int(snapshot, "skipped"),
-                        failed=_snapshot_int(snapshot, "failed"),
-                        images_done=images_done,
-                        images_total=_snapshot_int(snapshot, "images_discovered"),
-                        images_skipped=_snapshot_int(snapshot, "images_skipped"),
-                        current=current,
-                    )
+                    dashboard.update(snapshot)
+                    live.update(dashboard.render())
 
                 result = extract_visuals_command(
                     config=config,

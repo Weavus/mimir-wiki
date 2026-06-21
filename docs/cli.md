@@ -99,8 +99,10 @@ Filter and output options:
 - `--include-source-content / --no-include-source-content`: include or omit cleaned source Markdown in Onyx files.
 - `--redaction redact|fail|off`: redact likely secrets, fail if found, or disable redaction.
 
-Progress output includes page counts, failed pages, LLM calls completed/planned,
-cached calls, retries and current LLM task/page.
+Interactive progress output uses a compact live dashboard. It groups page
+progress, throughput, LLM calls, retry/rate-limit health, adaptive per-model
+concurrency and current page/task/chunk. `--json`, `--quiet`, CI and redirected
+output keep script-friendly non-interactive output.
 
 `enrich` is the command that creates or refreshes knowledge artifacts. It reads
 source cache pages, writes `pages/{page_id}/enrichment.json`, rewrites stable
@@ -183,6 +185,11 @@ sets the hard cap for in-flight LLM requests, while `llm.adaptive_concurrency`
 lets the client reduce per-model concurrency when a shared provider is busy. Keep
 `llm.requests_per_minute` and `llm.tokens_per_minute` unset unless you know the
 provider quota.
+
+Interactive progress output shows image/page progress, image and LLM throughput,
+in-flight LLM calls, hash-cache hits, retry/rate-limit health, adaptive
+concurrency and the current page/image. `--json`, `--quiet`, CI and redirected
+output keep script-friendly non-interactive output.
 
 Outputs:
 
