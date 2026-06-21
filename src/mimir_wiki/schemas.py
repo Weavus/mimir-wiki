@@ -196,6 +196,7 @@ class HierarchyContext(BaseModel):
 class CandidateFact(BaseModel):
     subject: str
     predicate: str
+    claim_type: str = "unknown"
     object: str
     confidence: float = Field(ge=0, le=1)
     evidence_text: str
@@ -436,6 +437,7 @@ class CandidateFactRow(PageScopedArtifact):
     fact_id: str
     subject: str
     predicate: str
+    claim_type: str = "unknown"
     object: str
     evidence_text: str
     confidence: float = Field(ge=0, le=1)

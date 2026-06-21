@@ -37,10 +37,14 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert enrichment["hierarchy"]["parent_title"] == "Runbooks"
     assert enrichment["hierarchy"]["page_role"] == "runbook_detail"
     assert enrichment["candidate_facts"]
-    predicates = {fact["predicate"] for fact in enrichment["candidate_facts"]}
+    facts_by_predicate = {fact["predicate"]: fact for fact in enrichment["candidate_facts"]}
+    predicates = set(facts_by_predicate)
     assert "owned_by" in predicates
     assert "supported_by" in predicates
     assert "has_diagnostic_step" in predicates
+    assert facts_by_predicate["owned_by"]["claim_type"] == "ownership"
+    assert facts_by_predicate["supported_by"]["claim_type"] == "support_model"
+    assert facts_by_predicate["has_diagnostic_step"]["claim_type"] == "procedure"
     assert (tmp_path / "knowledge" / "document_index.jsonl").exists()
     assert (tmp_path / "knowledge" / "quality_scores.jsonl").exists()
     assert (tmp_path / "knowledge" / "themes.jsonl").exists()
@@ -48,7 +52,14 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert (tmp_path / "knowledge" / "candidate_entities.jsonl").exists()
     assert (tmp_path / "knowledge" / "facts.jsonl").exists()
     assert (tmp_path / "knowledge" / "visual_index.jsonl").exists()
-    assert (tmp_path / "knowledge" / "facts.jsonl").read_text(encoding="utf-8").strip()
+    fact_rows = [
+        json.loads(line)
+        for line in (tmp_path / "knowledge" / "facts.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert fact_rows
+    assert {row["predicate"]: row for row in fact_rows}["owned_by"]["claim_type"] == "ownership"
     document_index = [
         json.loads(line)
         for line in (tmp_path / "knowledge" / "document_index.jsonl")

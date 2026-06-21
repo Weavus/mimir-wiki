@@ -293,6 +293,7 @@ def aggregate_candidate_fact_rows(
                     fact_id=f"fact:{enrichment.space_key}:{enrichment.page_id}:{index}",
                     subject=fact.subject,
                     predicate=fact.predicate,
+                    claim_type=fact.claim_type,
                     object=fact.object,
                     evidence_text=fact.evidence_text,
                     confidence=fact.confidence,

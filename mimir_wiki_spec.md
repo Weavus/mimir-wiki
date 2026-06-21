@@ -3812,7 +3812,7 @@ the longer-term design intent above.
 - [x] Resolve Confluence image URLs that point to attachments already downloaded
   under other exported page folders, so visual extraction can reuse those local
   files instead of marking them `remote_source_not_in_cache`.
-- [ ] Add explicit `claim_type` to candidate facts where practical so later
+- [x] Add explicit `claim_type` to candidate facts where practical so later
   source-authority checks can reason about claim-specific evidence strength.
 - [ ] Enforce `llm.tokens_per_minute` in `RateLimitedLLMClient`; request-per-
   minute limiting already exists.

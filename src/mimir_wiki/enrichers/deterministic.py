@@ -438,6 +438,7 @@ def extract_candidate_facts(
             CandidateFact(
                 subject=subject,
                 predicate=predicate,
+                claim_type=claim_type_for_predicate(predicate),
                 object=cleaned,
                 confidence=confidence,
                 evidence_text=evidence[:500],
@@ -532,6 +533,40 @@ def extract_candidate_facts(
         if len(facts) >= 20:
             break
     return facts
+
+
+def claim_type_for_predicate(predicate: str) -> str:
+    if predicate in {"owned_by"}:
+        return "ownership"
+    if predicate in {"supported_by", "escalates_to"}:
+        return "support_model"
+    if predicate in {"depends_on", "uses_database", "uses_queue", "uses_api"}:
+        return "dependency"
+    if predicate in {"runs_in_environment"}:
+        return "environment"
+    if predicate in {
+        "has_runbook",
+        "has_diagnostic_step",
+        "has_recovery_step",
+        "has_validation_step",
+        "has_backout_step",
+    }:
+        return "procedure"
+    if predicate in {"has_dashboard", "has_log_source", "has_alert"}:
+        return "monitoring"
+    if predicate in {"had_impact"}:
+        return "incident_impact"
+    if predicate in {"had_root_cause", "had_contributing_factor"}:
+        return "root_cause"
+    if predicate in {"had_detection_gap", "had_monitoring_gap", "had_runbook_gap"}:
+        return "gap"
+    if predicate in {"had_followup_action"}:
+        return "corrective_action"
+    if predicate in {"related_to_incident", "related_to_change"}:
+        return "timeline"
+    if predicate in {"has_known_failure_mode"}:
+        return "known_failure_mode"
+    return "unknown"
 
 
 def summarize(bundle: PageBundle, document_type: str, keywords: list[str]) -> tuple[str, str]:
