@@ -132,6 +132,17 @@ under `pages/{page_id}/attachments/`, matching Markdown image references, and
 embedded `data:image/...` values. Remote image URLs without local attachment
 files are recorded as skipped.
 
+Visual extraction ranks all discovered image sources before capping, reuses exact
+duplicate image OCR by `content_sha256`, skips obvious low-value visuals before
+provider calls, applies lower adaptive caps to report-like pages, samples repeated
+dashboard/chart groups, and writes omitted-source details to
+`runs/{run_id}/visual_omitted_images.jsonl`.
+
+`enrich` creates or refreshes page enrichment artifacts, global indexes, Onyx
+Markdown and reports. `report` only regenerates report Markdown from existing
+cache, knowledge, enrichment, visual and run artifacts; it does not call LLMs,
+run OCR, rewrite `enrichment.json`, or rewrite Onyx Markdown.
+
 Export JSON schemas for generated artifacts:
 
 ```bash

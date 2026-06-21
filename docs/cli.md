@@ -96,6 +96,13 @@ Filter and output options:
 Progress output includes page counts, failed pages, LLM calls completed/planned,
 cached calls, retries and current LLM task/page.
 
+`enrich` is the command that creates or refreshes knowledge artifacts. It reads
+source cache pages, writes `pages/{page_id}/enrichment.json`, rewrites stable
+JSONL indexes under `knowledge/`, writes Onyx POC Markdown when enabled, and
+finishes by writing the standard report set. Use `--changed-only` for normal
+incremental runs and `--force` after changing enrichment logic or regenerated
+visual extraction artifacts.
+
 `enrich` does not perform image OCR by itself. If `pages/{page_id}/visual_extraction.json`
 exists from a previous `extract-visuals` run, `enrich` reads it, adds
 `visual_content_extracted` when extraction completed successfully, and includes
@@ -131,8 +138,23 @@ download source images. Downloading attachments is `mimir-confluence`'s job.
 
 Remote image URLs that do not resolve to local cache attachments are recorded in
 `visual_extraction.json` as skipped with `error_type: remote_source_not_in_cache`.
-Rerun `mimir-confluence` with attachment export enabled if those visuals are
-needed.
+These can be Confluence-hosted attachment URLs, Confluence plugin/generated
+image URLs, or completely external URLs. Rerun `mimir-confluence` with attachment
+export enabled, and with embedded/linked-page attachment handling if available,
+when the missing Confluence-hosted visuals are important. External URLs require
+separate source-system support; `mimir-wiki` intentionally does not fetch them.
+
+Selection behavior:
+
+- all candidate image sources are discovered before any page cap is applied
+- candidates are ranked by deterministic context signals such as nearby heading,
+  filename, runbook/incident/architecture/dashboard/log keywords, and low-text pages
+- exact duplicate image content is reused by `content_sha256` to avoid repeated
+  multimodal calls
+- obvious logo/icon/placeholder/tiny images are skipped before provider calls
+- report-like pages use an adaptive lower cap from `visual_extraction.report_page_max_images`
+- repeated dashboard/chart/report images are sampled by representative group
+- omitted images are recorded for review instead of disappearing silently
 
 Useful options:
 
@@ -147,9 +169,11 @@ Useful options:
 Outputs:
 
 - `pages/{page_id}/visual_extraction.json`
+- `runs/{run_id}/visual_omitted_images.jsonl` when ranked/grouped/capped images are omitted
 - `runs/{run_id}/summary.json`
 - `runs/{run_id}/page_failures.jsonl`
 - `runs/{run_id}/warnings.jsonl`
+- `runs/{run_id}/llm_usage.jsonl` when provider usage data is available
 
 Typical workflow:
 
@@ -213,6 +237,13 @@ Reports include:
 - `duplicate_candidates.md`
 - `llm_usage.md`
 - `page_failures.md`
+
+`report` does not re-read every source page to produce new enrichments, does not
+call LLM providers, does not run visual OCR, and does not rewrite Onyx Markdown.
+It is a read-only summarization pass over the current cache, existing
+`knowledge/*.jsonl` indexes, existing per-page enrichment/visual artifacts, and
+historical `runs/*` artifacts. Use it after `enrich` or `extract-visuals` when
+you want fresh dashboards without changing page artifacts.
 
 ## `export-schema`
 

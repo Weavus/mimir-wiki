@@ -68,6 +68,16 @@ Deterministic enrichment includes document classification, subtype inference,
 hierarchy context, basic summaries, keywords, themes, concepts, candidate
 entities, facts, operational signals, warnings and quality scoring.
 
+`enrich` is the artifact-producing step. It reads source pages and existing
+visual extraction artifacts, then writes or refreshes per-page enrichment JSON,
+global indexes, Onyx POC Markdown and reports.
+
+`report` is different: it regenerates report Markdown from the current cache,
+existing knowledge indexes, existing enrichment/visual artifacts and historical
+run artifacts. It does not call LLM providers, does not extract images, does not
+rewrite `enrichment.json`, and does not rewrite Onyx Markdown. Use `report` when
+you want fresh summaries after existing artifacts are already present.
+
 ## Visual Extraction Workflow
 
 `mimir-wiki extract-visuals` extracts OCR text and captions from visual source
@@ -100,6 +110,50 @@ If a remote image URL is present in `clean.md` but the corresponding file is not
 available under `attachments/`, extraction records that image as skipped with
 `remote_source_not_in_cache`. Rerun `mimir-confluence` with attachment export
 enabled for pages where the missing image is important.
+
+Visual source selection is deterministic and auditable:
+
+- every candidate image source is discovered before applying page caps
+- candidates are ranked using context from nearby headings, Markdown context,
+  filenames and high-value terms such as architecture, diagram, runbook,
+  incident, dashboard, alarm, terminal, command and log
+- exact duplicate image content is reused by `content_sha256`, so one extraction
+  can serve repeated images on the same page or later pages in the run
+- obvious logo/icon/placeholder/tiny images are skipped before provider calls
+- report-like pages use `visual_extraction.report_page_max_images` as an
+  adaptive cap below the global `max_images_per_page`
+- repeated dashboard/chart/report visuals are sampled by representative group
+- omitted images are written to `runs/{run_id}/visual_omitted_images.jsonl` with
+  page, source, hash when available, selection score, nearby heading and reason
+
+Useful visual extraction config defaults:
+
+```yaml
+visual_extraction:
+  max_images_per_page: 20
+  skip_low_value_images: true
+  min_image_pixels: 4096
+  adaptive_page_caps: true
+  report_page_max_images: 12
+  representative_group_sampling: true
+  max_images_per_representative_group: 3
+```
+
+Skipped remote images need triage by source type:
+
+- Confluence `/download/attachments/{page_id}/...` URLs usually mean the image
+  belongs to another Confluence page or was embedded from another page. These
+  should be collected by `mimir-confluence` only if that linked/embedded page is
+  in scope and attachment download/materialization supports it.
+- Confluence `/download/attachments/embedded-page/{space}/{title}/...` URLs are
+  embedded-page attachments. Same-space embedded pages may be recoverable by
+  expanding the crawl or improving embedded-page attachment handling.
+- Confluence generated/plugin URLs such as PlantUML or placeholders are not
+  normal attachments. They need explicit exporter support if they matter.
+- Non-Confluence hosts such as Jira, Jive/TheHub, Lucid, Googleusercontent,
+  GitLab or ServiceNow are external source systems. `mimir-confluence` should
+  not be expected to collect those unless separate authenticated fetch support is
+  intentionally added for that source.
 
 After visual extraction, rerun enrichment so review flags and Onyx Markdown pick
 up the extraction results:
@@ -216,13 +270,15 @@ Jira and Confluence links appear before low-value profile or mail links.
 When successful `visual_extraction.json` artifacts exist, Onyx Markdown also
 includes an `Extracted Visual Content` section containing source-derived OCR text
 and captions. This section is evidence extracted from source images, not approved
-curated wiki prose.
+curated wiki prose. The Onyx visual section deduplicates repeated image hashes,
+limits the number of images rendered, truncates long OCR text, and labels OCR as
+review evidence because recognition errors are possible.
 
 ## Reports Workflow
 
 Reports summarize cache health, document types, stale/deprecated documents,
 high-value sources, missing owners, high-value hierarchy subtrees, attachments,
-LLM usage, page failures and follow-up candidates.
+LLM usage, page failures, visual extraction health and follow-up candidates.
 
 Use `report` when you want to regenerate reports without rerunning enrichment.
 
