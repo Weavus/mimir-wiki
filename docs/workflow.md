@@ -236,6 +236,11 @@ llm:
 With classification plus the two bundles, an unchunked page normally requires
 three LLM calls.
 
+Processing concurrency is split by concern. `processing.page_workers` controls
+page-level work, while live LLM calls are bounded by `llm.max_concurrency` and
+the adaptive per-model limiter. `processing.writer_workers` remains in config as
+a reserved future knob; MVP artifact writing is synchronous and deterministic.
+
 ## LLM Cache And Changed-Only
 
 LLM responses are cached under `paths.llm_cache`, defaulting to

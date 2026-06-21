@@ -29,6 +29,12 @@ default and scriptable with `--json` and `--quiet`.
 Config precedence is built-in defaults, config file, profile, `.env`, process
 environment variables, then CLI flags.
 
+Concurrency is configured in YAML. `processing.page_workers` bounds page-level
+work, while live LLM request concurrency is controlled by `llm.max_concurrency`
+and adaptive per-model throttling. `processing.writer_workers` is reserved for a
+future writer queue; MVP artifact writes are synchronous and deterministic, so
+changing it currently has no runtime effect.
+
 ## `validate-cache`
 
 Validate one exported cache.
