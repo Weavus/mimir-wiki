@@ -222,6 +222,9 @@ class OnyxPocConfig(BaseModel):
     metadata_field: str = "ONYX_METADATA"
     metadata_line_format: Literal["hash_prefix", "html_comment"] = "hash_prefix"
     metadata_policy: Literal["lean_filters", "extended_debug"] = "lean_filters"
+    dedupe_visual_content: bool = True
+    max_visual_images: int = 20
+    max_visual_ocr_chars: int = 2000
 
 
 class VisualExtractionConfig(BaseModel):

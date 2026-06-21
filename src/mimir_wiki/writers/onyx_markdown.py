@@ -108,7 +108,7 @@ def render_markdown(
         if enrichment.document_type in {"runbook", "support_model"}
         else "Documentation Quality Notes"
     )
-    visual_section = render_visual_extraction(bundle)
+    visual_section = render_visual_extraction(bundle, config)
     source_section = f"\n## Source Content\n\n{source}\n" if include_source_content else ""
     body = f"""
 
@@ -199,16 +199,21 @@ Section path: {enrichment.hierarchy.section_path or "unknown"}
     return first_line + body, truncation_warnings
 
 
-def render_visual_extraction(bundle: PageBundle) -> str:
+def render_visual_extraction(bundle: PageBundle, config: AppConfig) -> str:
     artifact = load_visual_extraction(bundle)
     if artifact is None or artifact.images_succeeded == 0:
         return ""
+    seen_hashes: set[str] = set()
+    rendered_count = 0
+    duplicate_count = 0
+    truncated_count = 0
     lines = [
         "## Extracted Visual Content",
         "",
         (
             "Source-derived OCR/caption extraction from visual source artifacts. "
-            "Use as evidence, not approved curated knowledge."
+            "Use as evidence for retrieval and review, not approved curated knowledge. "
+            "OCR may contain recognition errors."
         ),
         "",
         f"Extraction status: `{artifact.status}`",
@@ -218,6 +223,15 @@ def render_visual_extraction(bundle: PageBundle) -> str:
     for image in artifact.images:
         if image.status != "success":
             continue
+        if config.onyx_poc.dedupe_visual_content and image.content_sha256:
+            if image.content_sha256 in seen_hashes:
+                duplicate_count += 1
+                continue
+            seen_hashes.add(image.content_sha256)
+        if rendered_count >= config.onyx_poc.max_visual_images:
+            truncated_count += 1
+            continue
+        rendered_count += 1
         lines.append(f"### {image.image_id}")
         lines.append("")
         lines.append(f"Source: {image.source}")
@@ -225,12 +239,24 @@ def render_visual_extraction(bundle: PageBundle) -> str:
             lines.append("")
             lines.append(f"Caption: {image.caption}")
         if image.ocr_text:
+            ocr_text = image.ocr_text
+            if len(ocr_text) > config.onyx_poc.max_visual_ocr_chars:
+                ocr_text = ocr_text[: config.onyx_poc.max_visual_ocr_chars].rstrip()
+                truncated_count += 1
             lines.append("")
             lines.append("OCR text:")
             lines.append("")
             lines.append("```text")
-            lines.append(image.ocr_text[:5000])
+            lines.append(ocr_text)
+            if len(ocr_text) < len(image.ocr_text):
+                lines.append("[truncated]")
             lines.append("```")
+        lines.append("")
+    if duplicate_count:
+        lines.append(f"Duplicate visual images omitted from this section: {duplicate_count}")
+        lines.append("")
+    if truncated_count:
+        lines.append(f"Visual OCR/images truncated for Onyx output: {truncated_count}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

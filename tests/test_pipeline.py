@@ -8,9 +8,11 @@ from pathlib import Path
 import httpx
 
 import mimir_wiki.pipeline as pipeline
+from mimir_wiki.cache_reader import CacheReader
 from mimir_wiki.config import load_config
 from mimir_wiki.llm.probe import generate_probe_png
 from mimir_wiki.pipeline import enrich_command, extract_visuals_command, validate_cache_command
+from mimir_wiki.writers.onyx_markdown import render_visual_extraction
 
 
 def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: Path) -> None:
@@ -920,6 +922,74 @@ def test_extract_visuals_skips_obvious_low_value_images(
     assert artifact["status"] == "skipped"
     assert artifact["images"][0]["status"] == "skipped"
     assert artifact["images"][0]["error_type"] == "low_value_visual"
+
+
+def test_onyx_visual_section_dedupes_and_truncates(tiny_cache: Path, tmp_path: Path) -> None:
+    visual_path = tiny_cache / "pages" / "123" / "visual_extraction.json"
+    long_ocr = "visible text " * 40
+    visual_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "mimir-wiki/v1",
+                "run_id": "visual-run",
+                "dataset_name": "tiny",
+                "generated_at": "2026-06-17T00:00:00Z",
+                "generator": "mimir-wiki",
+                "source_system": "confluence",
+                "document_id": "confluence:IDENTITY:123",
+                "page_id": "123",
+                "space_key": "IDENTITY",
+                "source_updated_at": "2026-05-01T12:45:00Z",
+                "source_content_hash": "sha256:test",
+                "extracted_at": "2026-06-17T00:00:00Z",
+                "status": "complete",
+                "method": "multimodal_ocr",
+                "provider": "mock",
+                "model": "mock-model",
+                "prompt_version": "visual-ocr-v1",
+                "image_count": 2,
+                "images_succeeded": 2,
+                "images_failed": 0,
+                "images_skipped": 0,
+                "images": [
+                    {
+                        "image_id": "image-001",
+                        "source": "attachments/one.png",
+                        "source_kind": "file",
+                        "content_sha256": "same-hash",
+                        "status": "success",
+                        "ocr_text": long_ocr,
+                        "caption": "First visual",
+                    },
+                    {
+                        "image_id": "image-002",
+                        "source": "attachments/two.png",
+                        "source_kind": "file",
+                        "content_sha256": "same-hash",
+                        "status": "success",
+                        "ocr_text": "duplicate",
+                        "caption": "Duplicate visual",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+            "onyx_poc": {"max_visual_ocr_chars": 30},
+        }
+    )
+    bundle = CacheReader(tiny_cache).iter_pages()[0]
+
+    section = render_visual_extraction(bundle, config)
+
+    assert "image-001" in section
+    assert "image-002" not in section
+    assert "[truncated]" in section
+    assert "Duplicate visual images omitted from this section: 1" in section
 
 
 def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
