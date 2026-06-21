@@ -31,6 +31,11 @@ class VisualSource:
     source: str
     source_kind: Literal["data_url", "file", "url"]
     mime_type: str | None = None
+    source_order: int = 0
+    nearby_heading: str | None = None
+    context: str = ""
+    selection_score: int = 0
+    selection_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,11 +101,19 @@ def discover_visual_sources(
 ) -> list[VisualSource]:
     sources: list[VisualSource] = []
     seen: set[str] = set()
+    source_order = 0
     for match in MARKDOWN_IMAGE_RE.finditer(bundle.clean_markdown):
         source = match.group(1).strip("<>")
         if should_skip_image_source(source) or source in seen:
             continue
-        visual_source = source_from_reference(bundle, source)
+        source_order += 1
+        visual_source = source_from_reference(
+            bundle,
+            source,
+            source_order=source_order,
+            nearby_heading=nearest_heading(bundle.clean_markdown, match.start()),
+            context=nearby_context(bundle.clean_markdown, match.start()),
+        )
         if visual_source.source in seen:
             continue
         seen.update({source, visual_source.source})
@@ -114,13 +127,89 @@ def discover_visual_sources(
             source = str(path)
             if source in seen:
                 continue
+            source_order += 1
             seen.add(source)
             sources.append(
-                VisualSource(source=source, source_kind="file", mime_type=mime_type_for(path.name))
+                VisualSource(
+                    source=source,
+                    source_kind="file",
+                    mime_type=mime_type_for(path.name),
+                    source_order=source_order,
+                    context=path.name,
+                )
             )
             if max_images is not None and len(sources) >= max_images:
                 return sources
     return sources
+
+
+def rank_visual_sources(bundle: PageBundle, sources: list[VisualSource]) -> list[VisualSource]:
+    scored = [score_visual_source(bundle, source) for source in sources]
+    return sorted(scored, key=lambda source: (-source.selection_score, source.source_order))
+
+
+def score_visual_source(bundle: PageBundle, source: VisualSource) -> VisualSource:
+    text = " ".join(
+        part for part in [source.source, source.nearby_heading or "", source.context] if part
+    ).lower()
+    score = 10
+    reasons: list[str] = []
+    if source.context:
+        score += 20
+        reasons.append("markdown_reference")
+    high_value_patterns = {
+        "architecture_context": r"architecture|diagram|topology|network|schema|flow|sequence",
+        "operational_context": r"runbook|procedure|recovery|diagnostic|validation|backout",
+        "incident_context": r"incident|investigation|root cause|rca|error|exception|failure|timeout",
+        "monitoring_context": r"dashboard|chart|metric|alarm|alert|monitor|cloudwatch|splunk|grafana|kibana",
+        "code_or_log_context": r"terminal|command|powershell|shell|log|stack trace|json|xml|sql",
+    }
+    for reason, pattern in high_value_patterns.items():
+        if re.search(pattern, text):
+            score += 25
+            reasons.append(reason)
+    if bundle.text.strip() and len(bundle.text.split()) < 150:
+        score += 15
+        reasons.append("low_text_page")
+    if re.search(r"logo|avatar|icon|badge|thumbnail|spacer|blank|placeholder", text):
+        score -= 35
+        reasons.append("likely_low_value_visual")
+    if source.source_kind == "url":
+        score -= 20
+        reasons.append("remote_not_local")
+    return VisualSource(
+        source=source.source,
+        source_kind=source.source_kind,
+        mime_type=source.mime_type,
+        source_order=source.source_order,
+        nearby_heading=source.nearby_heading,
+        context=source.context,
+        selection_score=score,
+        selection_reasons=tuple(reasons or ["default_order"]),
+    )
+
+
+def nearest_heading(markdown: str, position: int) -> str | None:
+    prefix = markdown[:position]
+    for line in reversed(prefix.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or None
+    return None
+
+
+def nearby_context(markdown: str, position: int) -> str:
+    line_start = markdown.rfind("\n", 0, position) + 1
+    line_end = markdown.find("\n", position)
+    if line_end == -1:
+        line_end = len(markdown)
+    previous_start = markdown.rfind("\n", 0, max(0, line_start - 1)) + 1
+    next_end = markdown.find("\n", line_end + 1)
+    if next_end == -1:
+        next_end = len(markdown)
+    start = previous_start if previous_start < line_start else line_start
+    end = next_end if next_end > line_end else line_end
+    return markdown[start:end]
 
 
 def should_skip_image_source(source: str) -> bool:
@@ -135,22 +224,55 @@ def should_skip_image_source(source: str) -> bool:
     return Path(unquote(source)).suffix.lower() not in IMAGE_EXTENSIONS
 
 
-def source_from_reference(bundle: PageBundle, source: str) -> VisualSource:
+def source_from_reference(
+    bundle: PageBundle,
+    source: str,
+    *,
+    source_order: int = 0,
+    nearby_heading: str | None = None,
+    context: str = "",
+) -> VisualSource:
     parsed = urlparse(source)
     if parsed.scheme == "data":
         mime_type = source.split(";", 1)[0].removeprefix("data:") or None
-        return VisualSource(source=source, source_kind="data_url", mime_type=mime_type)
+        return VisualSource(
+            source=source,
+            source_kind="data_url",
+            mime_type=mime_type,
+            source_order=source_order,
+            nearby_heading=nearby_heading,
+            context=context,
+        )
     if parsed.scheme in {"http", "https"}:
         local_path = local_attachment_for_url(bundle, source)
         if local_path is not None:
             return VisualSource(
-                source=str(local_path), source_kind="file", mime_type=mime_type_for(local_path.name)
+                source=str(local_path),
+                source_kind="file",
+                mime_type=mime_type_for(local_path.name),
+                source_order=source_order,
+                nearby_heading=nearby_heading,
+                context=context,
             )
-        return VisualSource(source=source, source_kind="url", mime_type=mime_type_for(parsed.path))
+        return VisualSource(
+            source=source,
+            source_kind="url",
+            mime_type=mime_type_for(parsed.path),
+            source_order=source_order,
+            nearby_heading=nearby_heading,
+            context=context,
+        )
     path = Path(unquote(source))
     if not path.is_absolute():
         path = bundle.paths.clean_md.parent / path
-    return VisualSource(source=str(path), source_kind="file", mime_type=mime_type_for(path.name))
+    return VisualSource(
+        source=str(path),
+        source_kind="file",
+        mime_type=mime_type_for(path.name),
+        source_order=source_order,
+        nearby_heading=nearby_heading,
+        context=context,
+    )
 
 
 async def extract_visuals_for_page(
@@ -164,11 +286,14 @@ async def extract_visuals_for_page(
     llm_transport: httpx.AsyncBaseTransport | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     image_cache: dict[str, VisualExtractionImage] | None = None,
+    sources: list[VisualSource] | None = None,
 ) -> tuple[VisualExtractionArtifact, int, list[LLMUsage], int]:
     endpoint = build_visual_probe_endpoint(config)
-    sources = discover_visual_sources(
-        bundle, max_images=config.visual_extraction.max_images_per_page
-    )
+    if sources is None:
+        discovered_sources = discover_visual_sources(bundle)
+        ranked_sources = rank_visual_sources(bundle, discovered_sources)
+        max_images = config.visual_extraction.max_images_per_page
+        sources = ranked_sources[:max_images] if max_images >= 0 else ranked_sources
     if not sources:
         artifact = build_visual_artifact(
             bundle=bundle,

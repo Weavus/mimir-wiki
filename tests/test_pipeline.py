@@ -681,6 +681,60 @@ def test_extract_visuals_reports_images_omitted_by_page_cap(
     assert result.warnings[0].warning_type == "visual_images_omitted_by_page_cap"
 
 
+def test_extract_visuals_ranks_sources_before_applying_page_cap(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    logo_path = tiny_cache / "pages" / "123" / "attachments" / "logo.png"
+    architecture_path = tiny_cache / "pages" / "123" / "attachments" / "architecture.png"
+    logo_path.write_bytes(generate_probe_png())
+    architecture_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![Logo icon](attachments/logo.png)\n"
+        + "\n## Architecture\n![Service topology](attachments/architecture.png)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"output_text": json.dumps({"ocr_text": "ARCH", "caption": "Architecture"})},
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {
+                "provider": "azure-ai-foundry",
+                "model": "gpt-5.4-mini",
+                "max_images_per_page": 1,
+            },
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert artifact["images"][0]["source"] == str(architecture_path)
+
+
 def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     long_cell = "step " * 260

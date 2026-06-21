@@ -38,6 +38,7 @@ from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, 
 from mimir_wiki.visual_extraction import (
     discover_visual_sources,
     load_visual_extraction,
+    rank_visual_sources,
     run_extract_visuals_for_page,
     visual_extraction_path,
 )
@@ -946,9 +947,10 @@ def extract_visuals_command(
         current_page = bundle.metadata.page_id
         emit_progress(current_page=current_page, current_status="discovering")
         all_sources = discover_visual_sources(bundle)
+        ranked_sources = rank_visual_sources(bundle, all_sources)
         source_count = len(all_sources)
         max_images = config.visual_extraction.max_images_per_page
-        sources = all_sources[:max_images] if max_images >= 0 else all_sources
+        sources = ranked_sources[:max_images] if max_images >= 0 else ranked_sources
         omitted_by_cap = max(0, source_count - len(sources))
         if not sources:
             skipped += 1
@@ -1013,6 +1015,7 @@ def extract_visuals_command(
                 llm_transport=llm_transport,
                 progress_callback=image_progress_callback,
                 image_cache=image_cache,
+                sources=sources,
             )
         except Exception as exc:
             context.page_failure(
