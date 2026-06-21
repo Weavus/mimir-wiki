@@ -20,7 +20,8 @@ augmented by the implementation notes below.
 The current implementation extends the original MVP1 contract with these
 operational details:
 
-- CLI commands are `validate-cache`, `enrich`, `report` and `export-schema`.
+- CLI commands are `validate-cache`, `enrich`, `extract-visuals`, `probe-ocr`,
+  `report` and `export-schema`.
 - Generated artifacts include `schema_version: mimir-wiki/v1` and are written
   with atomic writes.
 - `.env` is loaded for provider credentials and proxy settings, while YAML stores
@@ -45,9 +46,16 @@ operational details:
 - Taxonomy terms are filtered at page level and aggregate level to reduce
   generic keywords, themes and concepts while preserving useful phrases.
 - Reports include high-value hierarchy subtrees, duplicate candidates, LLM usage,
-  page failures, attachment followups, missing owners and source quality views.
+  page failures, attachment followups, missing owners, visual extraction health
+  and source quality views.
 - Page processing uses bounded worker concurrency and supports graceful
   cancellation with partial run artifacts.
+- Visual extraction reads only local cache evidence, ranks all candidate images
+  before capping, reuses exact image OCR by `content_sha256`, skips obvious
+  low-value visuals, adaptively caps report-like pages, samples repeated visual
+  groups and writes omitted image inventories under `runs/{run_id}/`.
+- Onyx visual evidence sections deduplicate repeated image hashes and truncate
+  long OCR text before export.
 - `export-schema` writes JSON Schema files for generated artifact contracts.
 
 These implemented details should be treated as part of the current MVP1 behavior
@@ -3535,60 +3543,64 @@ Complete items in order unless a later item is needed to unblock tests.
 
 ---
 
-## 27. Initial Backlog
+## 27. Backlog Status
+
+This was the initial backlog. It is now annotated with current implementation
+status so the spec can continue to serve as the project TODO list.
 
 ### Must Have
 
-- Pydantic schemas;
-- `validate-cache`;
-- `enrich`;
-- `report`;
-- document index output;
-- per-page enrichment output;
-- deterministic `--provider none` enrichment;
-- document type classification;
-- keyword, theme and concept extraction;
-- candidate entity extraction;
-- Onyx POC enriched Markdown export with `ONYX_METADATA`;
-- quality scoring;
-- changed-only processing;
-- progress bars and structured logs.
+- [x] Pydantic schemas;
+- [x] `validate-cache`;
+- [x] `enrich`;
+- [x] `report`;
+- [x] document index output;
+- [x] per-page enrichment output;
+- [x] deterministic `--provider none` enrichment;
+- [x] document type classification;
+- [x] keyword, theme and concept extraction;
+- [x] candidate entity extraction;
+- [x] Onyx POC enriched Markdown export with `ONYX_METADATA`;
+- [x] quality scoring;
+- [x] changed-only processing;
+- [x] progress bars and structured logs.
 
 ### Should Have
 
-- LLM-assisted summaries;
-- LLM-assisted themes and concepts;
-- RCA-specific enrichment signals;
-- duplicate or near-duplicate detection;
-- stale/deprecated/archive reports;
-- high-value-source reports;
-- Onyx file connector smoke test using `dist/onyx-enriched`;
-- configurable scoring;
-- small sanitized fixtures derived from real exports.
+- [x] LLM-assisted summaries;
+- [x] LLM-assisted themes and concepts;
+- [x] RCA-specific enrichment signals;
+- [x] duplicate or near-duplicate detection;
+- [x] stale/deprecated/archive reports;
+- [x] high-value-source reports;
+- [ ] Onyx file connector smoke test using `dist/onyx-enriched`;
+- [x] configurable scoring;
+- [x] small sanitized fixtures derived from real exports.
 
 ### Could Have
 
-- `extract-facts`;
-- `build-entities`;
-- `detect-contradictions`;
-- `rca-index`;
-- GLiNER integration;
-- KeyBERT/YAKE keyword extraction;
-- entity alias file;
-- Obsidian vault output;
-- Markdown front matter;
-- source evidence sections;
-- `compile application`;
-- `compile known-failure-mode`;
-- `compile runbook`;
-- `compile quality-report`;
-- approved-only publish folder;
-- MkDocs export;
-- Onyx API push;
-- Confluence publishing;
-- Postgres storage;
-- `compile all`;
-- visual dependency graph output.
+- [ ] `extract-facts` command;
+- [ ] `build-entities` command;
+- [ ] `detect-contradictions` command;
+- [ ] `rca-index` command;
+- [ ] GLiNER integration;
+- [ ] KeyBERT/YAKE keyword extraction;
+- [ ] entity alias file and resolved entity registry;
+- [ ] Obsidian vault output;
+- [ ] Markdown front matter for compiled pages;
+- [x] source evidence sections for Onyx POC Markdown;
+- [ ] `compile application`;
+- [ ] `compile known-failure-mode`;
+- [ ] `compile runbook`;
+- [ ] `compile quality-report`;
+- [ ] approved-only publish folder;
+- [ ] MkDocs export;
+- [ ] Onyx API push;
+- [ ] Confluence publishing;
+- [ ] Postgres storage;
+- [ ] `compile all`;
+- [x] visual extraction/index/report output;
+- [ ] visual dependency graph output.
 
 ### Won't Have in MVP
 
@@ -3752,7 +3764,113 @@ Batch compilation:
 
 ---
 
-## 30. Summary
+## 30. Current Implementation Status and TODO
+
+This section is the current project tracker as of the MVP1 implementation in
+`src/mimir_wiki/`. It supersedes the older unannotated backlog while preserving
+the longer-term design intent above.
+
+### 30.1 Implemented
+
+- [x] Python package, CLI entry point, tests and quality tooling.
+- [x] Cache reader and validator for observed `mimir-confluence` exports.
+- [x] Config loading with defaults, YAML, profiles, `.env`, environment
+  variables and CLI overrides.
+- [x] Versioned Pydantic artifact schemas and JSON Schema export.
+- [x] Run manifests, warnings, page failures and LLM usage artifacts under
+  `runs/{run_id}/`.
+- [x] Deterministic enrichment for document type, subtype, summaries, keywords,
+  themes, concepts, candidate entities, candidate facts, operational signals,
+  hierarchy context and quality scoring.
+- [x] Optional LLM enrichment for classification, summaries, keywords, themes,
+  concepts, candidate entities, operational signals, quality warnings and key
+  facts.
+- [x] LLM provider abstraction for `none`, OpenAI, Azure OpenAI, Azure AI
+  Foundry and OpenAI-compatible endpoints.
+- [x] Shared retrying/rate-limited LLM client with timeouts, bounded retries,
+  jitter, retry-after handling and mocked-provider tests.
+- [x] LLM response cache keyed by source hash, prompt text/version, provider,
+  model, task or bundle and enrichment config hash.
+- [x] Task-specific model routing and task bundles.
+- [x] Stable global JSONL indexes for documents, quality, themes, concepts,
+  candidate entities, facts and visual extraction rows.
+- [x] Onyx POC Markdown with first-line `#ONYX_METADATA={...}`, source content,
+  key facts, prioritized source links, redaction and visual evidence sections.
+- [x] `extract-visuals` multimodal OCR/caption workflow over local cache images,
+  including source ranking, hash reuse, low-value skips, adaptive caps,
+  representative visual sampling and omitted image inventories.
+- [x] `probe-ocr` multimodal capability check.
+- [x] Reports for validation, enrichment summary, document types,
+  stale/deprecated pages, high-value sources, missing owners, high-value
+  subtrees, attachments, duplicate candidates, LLM usage, page failures and
+  visual extraction health.
+- [x] Bounded page-worker concurrency and graceful `enrich` cancellation.
+- [x] Unit, CLI, LLM, report, redaction, observed-shape and smoke-test coverage.
+
+### 30.2 Outstanding MVP Hardening
+
+- [ ] Resolve Confluence image URLs that point to attachments already downloaded
+  under other exported page folders, so visual extraction can reuse those local
+  files instead of marking them `remote_source_not_in_cache`.
+- [ ] Add explicit `claim_type` to candidate facts where practical so later
+  source-authority checks can reason about claim-specific evidence strength.
+- [ ] Enforce `llm.tokens_per_minute` in `RateLimitedLLMClient`; request-per-
+  minute limiting already exists.
+- [ ] Decide whether `processing.writer_workers` needs a real writer queue or
+  should be removed from MVP config until needed.
+- [ ] Add a CLI `--workers` override or document that page worker tuning is
+  config-only.
+- [ ] Tighten `--llm-task` validation at CLI override boundaries so unknown tasks
+  fail early and consistently.
+- [ ] Add an optional Onyx file-connector smoke test or documented manual smoke
+  checklist using `dist/onyx-enriched`.
+- [ ] Reconcile report filenames with section 15.13 if downstream users expect
+  `stale_docs.md`, `low_quality_high_value.md`, `contradictions.md` or
+  `candidate_runbooks.md` specifically.
+
+### 30.3 Post-MVP Knowledge Model TODO
+
+- [ ] Implement `mimir-wiki extract-facts` as a standalone command or explicitly
+  retire it in favor of `enrich` writing `knowledge/facts.jsonl`.
+- [ ] Implement `mimir-wiki build-entities`.
+- [ ] Write `knowledge/entities.jsonl` and `knowledge/entity_aliases.jsonl`.
+- [ ] Add `entity_aliases.yaml` loading and deterministic alias resolution.
+- [ ] Add `source_authority.yaml` loading or an equivalent claim-authority config
+  model.
+- [ ] Implement `mimir-wiki detect-contradictions` and
+  `knowledge/contradictions.jsonl`.
+- [ ] Add `reports/contradictions.md` once contradiction detection exists.
+- [ ] Implement `mimir-wiki rca-index`, `knowledge/rca_index.jsonl` and
+  `reports/rca_clusters.md`.
+- [ ] Add RCA/failure-mode clustering across incidents, RCAs, known errors and
+  runbooks.
+
+### 30.4 Post-MVP Compilation and Publishing TODO
+
+- [ ] Implement source selection/ranking for compiled pages.
+- [ ] Implement `compile application` first, with evidence-backed application
+  cards.
+- [ ] Implement `compile runbook` after application/entity identity is reliable.
+- [ ] Implement `compile quality-report`.
+- [ ] Implement `compile known-failure-mode`.
+- [ ] Add Obsidian-compatible vault layout under `vault/00 Review/`.
+- [ ] Add compiled page YAML front matter and validation.
+- [ ] Add human review status transitions and approval validation.
+- [ ] Implement `publish` from approved vault pages to `dist/onyx-approved`.
+- [ ] Add approved-only Onyx publishing rules and link/front-matter validation.
+- [ ] Defer `compile all` until manual single-entity compilation and dependency
+  tracking are reliable.
+
+### 30.5 Longer-Term TODO
+
+- [ ] Postgres-backed store for large corpus queries and dashboards.
+- [ ] Onyx API push or packaging workflow beyond file connector output.
+- [ ] MkDocs export.
+- [ ] Confluence publishing of reviewed pages.
+- [ ] Optional web UI.
+- [ ] Richer graph outputs, including visual dependency graphs.
+
+## 31. Summary
 
 `mimir-wiki` is the enrichment, inventory and later curation engine for Mimir.
 
