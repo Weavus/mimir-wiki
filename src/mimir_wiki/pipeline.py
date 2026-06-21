@@ -12,7 +12,13 @@ from pydantic import ValidationError
 
 from mimir_wiki.cache_reader import CacheReader, PageBundle
 from mimir_wiki.config import AppConfig
-from mimir_wiki.constants import EXIT_PARTIAL_SUCCESS, EXIT_SUCCESS, EXIT_USER_ERROR
+from mimir_wiki.constants import (
+    EXIT_PARTIAL_SUCCESS,
+    EXIT_SUCCESS,
+    EXIT_USER_ERROR,
+    GENERATOR,
+    SCHEMA_VERSION,
+)
 from mimir_wiki.enrichers.deterministic import enrich_page, refreshed_for_run, signature_matches
 from mimir_wiki.enrichers.llm import apply_llm_enrichment, enabled_llm_tasks
 from mimir_wiki.hierarchy import build_hierarchy_context, build_tree_counts
@@ -36,10 +42,12 @@ from mimir_wiki.schemas import (
 )
 from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, new_run_id, utc_now
 from mimir_wiki.visual_extraction import (
+    VisualSource,
     discover_visual_sources,
     load_visual_extraction,
     rank_visual_sources,
     run_extract_visuals_for_page,
+    visual_source_content_sha256,
     visual_extraction_path,
 )
 from mimir_wiki.writers.artifacts import (
@@ -913,6 +921,7 @@ def extract_visuals_command(
     images_skipped = 0
     images_omitted_by_page_cap = 0
     pages_capped = 0
+    omitted_image_records: list[dict[str, Any]] = []
 
     def emit_progress(
         *,
@@ -951,6 +960,10 @@ def extract_visuals_command(
         source_count = len(all_sources)
         max_images = config.visual_extraction.max_images_per_page
         sources = ranked_sources[:max_images] if max_images >= 0 else ranked_sources
+        selected_source_ids = {source.source for source in sources}
+        omitted_sources = [
+            source for source in ranked_sources if source.source not in selected_source_ids
+        ]
         omitted_by_cap = max(0, source_count - len(sources))
         if not sources:
             skipped += 1
@@ -962,6 +975,16 @@ def extract_visuals_command(
         if omitted_by_cap:
             pages_capped += 1
             images_omitted_by_page_cap += omitted_by_cap
+            omitted_image_records.extend(
+                _visual_omitted_records(
+                    bundle=bundle,
+                    sources=omitted_sources,
+                    run_id=context.run_id,
+                    dataset_name=dataset_name,
+                    generated_at=context.generated_at,
+                    reason="page_cap",
+                )
+            )
             context.warnings.append(
                 WarningRecord(
                     run_id=context.run_id,
@@ -1050,6 +1073,25 @@ def extract_visuals_command(
         emit_progress(current_page=current_page, current_status=artifact.status)
     emit_progress(current_status="done")
     output_paths.sort(key=lambda path: str(path))
+    if omitted_image_records and not dry_run:
+        context.runs_dir.mkdir(parents=True, exist_ok=True)
+        omitted_path = context.runs_dir / "visual_omitted_images.jsonl"
+        omitted_image_records.sort(
+            key=lambda row: (
+                str(row["space_key"]),
+                str(row["page_id"]),
+                int(row["source_order"]),
+            )
+        )
+        atomic_write_jsonl(omitted_path, omitted_image_records)
+        context.files_written += 1
+        output_paths.append(omitted_path)
+        _artifact_event(
+            event_callback,
+            run_id=context.run_id,
+            artifact_type="visual_omitted_images",
+            path=omitted_path,
+        )
     exit_code = EXIT_PARTIAL_SUCCESS if context.failures else EXIT_SUCCESS
     status = "partial_success" if context.failures else "success"
     summary = context.build_summary(
@@ -1068,6 +1110,7 @@ def extract_visuals_command(
             "visual_images_failed": images_failed,
             "visual_images_skipped": images_skipped,
             "visual_images_omitted_by_page_cap": images_omitted_by_page_cap,
+            "visual_omitted_inventory_records": len(omitted_image_records),
             "llm_calls": len(context.llm_usage),
             "llm_retries": context.llm_retries,
         },
@@ -1093,6 +1136,45 @@ def _build_visual_image_cache(pages: list[PageBundle]) -> dict[str, VisualExtrac
                 continue
             cache.setdefault(image.content_sha256, image)
     return cache
+
+
+def _visual_omitted_records(
+    *,
+    bundle: PageBundle,
+    sources: list[VisualSource],
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for source in sources:
+        rows.append(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "run_id": run_id,
+                "dataset_name": dataset_name,
+                "generated_at": generated_at,
+                "generator": GENERATOR,
+                "source_system": "confluence",
+                "document_id": bundle.document_id,
+                "page_id": bundle.metadata.page_id,
+                "space_key": bundle.metadata.space_key,
+                "title": bundle.metadata.title,
+                "source_updated_at": bundle.metadata.updated_at,
+                "source_content_hash": bundle.source_content_hash,
+                "source": source.source,
+                "source_kind": source.source_kind,
+                "mime_type": source.mime_type,
+                "content_sha256": visual_source_content_sha256(source),
+                "omitted_reason": reason,
+                "selection_score": source.selection_score,
+                "selection_reasons": list(source.selection_reasons),
+                "nearby_heading": source.nearby_heading,
+                "source_order": source.source_order,
+            }
+        )
+    return rows
 
 
 def _read_document_rows(path: Path) -> list[DocumentIndexRow]:

@@ -594,6 +594,16 @@ def load_image_bytes(source: VisualSource) -> tuple[bytes, str]:
     raise ValueError("Remote image source is not available in the local cache")
 
 
+def visual_source_content_sha256(source: VisualSource) -> str | None:
+    if source.source_kind == "url":
+        return None
+    try:
+        image_bytes, _mime_type = load_image_bytes(source)
+    except (OSError, ValueError):
+        return None
+    return hashlib.sha256(image_bytes).hexdigest()
+
+
 def build_visual_payload(
     endpoint: ProbeEndpoint, *, image_bytes: bytes, mime_type: str, title_hint: str
 ) -> dict[str, Any]:
