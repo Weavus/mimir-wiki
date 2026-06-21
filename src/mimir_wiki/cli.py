@@ -9,11 +9,9 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
-from rich.progress_bar import ProgressBar
+from rich.progress import Progress, TaskID, TextColumn
 from rich.table import Table
-from rich.text import Text
 
 from mimir_wiki.config import AppConfig, apply_runtime_overrides, load_config
 from mimir_wiki.constants import EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USER_ERROR
@@ -243,94 +241,77 @@ def _style_count(value: int, *, warn: bool = False) -> str:
     return f"[yellow]{value}[/yellow]" if warn else f"[cyan]{value}[/cyan]"
 
 
-class RunDashboard:
+class FixedProgressDashboard:
     def __init__(
         self,
         *,
         command: str,
         dataset: str,
-        provider: str,
-        model: str,
-        primary_unit: str,
+        provider: str = "local",
+        model: str = "",
+        mode: str,
         console: Console,
     ) -> None:
         self.command = command
         self.dataset = dataset
         self.provider = provider
         self.model = model
-        self.primary_unit = primary_unit
+        self.mode = mode
         self.console = console
         self.started_at = time.monotonic()
         self.snapshot: dict[str, object] = {}
+        self.progress = Progress(
+            TextColumn("{task.fields[line]}"),
+            console=console,
+            refresh_per_second=2,
+            transient=True,
+        )
+        self.tasks: dict[str, TaskID] = {}
+
+    def __enter__(self) -> FixedProgressDashboard:
+        self.progress.start()
+        for key, line in self._lines():
+            self.tasks[key] = self.progress.add_task("", total=None, line=line)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.progress.stop()
 
     def update(self, snapshot: dict[str, object]) -> None:
         self.snapshot.update(snapshot)
+        for key, line in self._lines():
+            self.progress.update(self.tasks[key], line=line)
 
-    def render(self) -> Panel:
+    def _lines(self) -> list[tuple[str, str]]:
         elapsed = time.monotonic() - self.started_at
-        primary_done, primary_total = self._primary_progress()
-        percent = (primary_done / primary_total * 100) if primary_total else 0
-        eta = self._eta(elapsed, primary_done, primary_total)
-        table = Table.grid(expand=True)
-        table.add_column("group", style="bold cyan", no_wrap=True, width=11)
-        table.add_column("value", ratio=1)
-        table.add_row(
-            "Progress",
-            (
-                f"[bold]{primary_done:,} / {primary_total:,}[/bold] {self.primary_unit}   "
-                f"[cyan]{percent:.1f}%[/cyan]   ETA [dim]{_fmt_duration(eta)}[/dim]   "
-                f"Elapsed [dim]{_fmt_duration(elapsed)}[/dim]"
-            ),
-        )
-        for row in self._work_rows(elapsed):
-            table.add_row(*row)
-        table.add_row(
-            "",
-            ProgressBar(total=100, completed=max(0, min(100, percent)), width=None),
-        )
-        header = Text.assemble(
-            (self.dataset, "bold"),
-            "  ",
-            (self.provider, "blue"),
-            " · ",
-            (self.model, "blue"),
-        )
-        return Panel(
-            table,
-            title=f"[bold cyan]{self.command}[/bold cyan]",
-            subtitle=header,
-            border_style="cyan",
+        if self.mode == "enrich":
+            return self._enrich_lines(elapsed)
+        if self.mode == "extract-visuals":
+            return self._visual_lines(elapsed)
+        if self.mode == "report":
+            return self._report_lines(elapsed)
+        return self._validate_lines(elapsed)
+
+    def _header(self) -> str:
+        model = f" · {self.model}" if self.model else ""
+        return (
+            f"[bold cyan]{self.command}[/bold cyan]  [bold]{self.dataset}[/bold]  "
+            f"[blue]{self.provider}{model}[/blue]"
         )
 
-    def _primary_progress(self) -> tuple[int, int]:
-        if self.command == "extract-visuals":
-            done = _snapshot_int(self.snapshot, "images_completed")
-            if done == 0:
-                done = (
-                    _snapshot_int(self.snapshot, "images_extracted")
-                    + _snapshot_int(self.snapshot, "images_failed")
-                    + _snapshot_int(self.snapshot, "images_skipped")
-                )
-            total = _snapshot_int(self.snapshot, "images_considered") or _snapshot_int(
-                self.snapshot, "images_discovered"
-            )
-            return done, max(1, total)
-        return _snapshot_int(self.snapshot, "considered"), max(
-            1, _snapshot_int(self.snapshot, "total")
+    def _progress_line(self, label: str, done: int, total: int, unit: str, elapsed: float) -> str:
+        total = max(1, total)
+        percent = done / total * 100
+        eta = elapsed / done * (total - done) if done > 0 and total > done else None
+        return (
+            f"[bold cyan]{label:<10}[/bold cyan] {_text_bar(percent)}  "
+            f"{done:,}/{total:,} {unit}  [cyan]{percent:5.1f}%[/cyan]  "
+            f"ETA [dim]{_fmt_duration(eta)}[/dim]  Elapsed [dim]{_fmt_duration(elapsed)}[/dim]"
         )
 
-    def _eta(self, elapsed: float, done: int, total: int) -> float | None:
-        if done <= 0 or total <= done:
-            return None
-        return elapsed / done * (total - done)
-
-    def _work_rows(self, elapsed: float) -> list[tuple[str, str]]:
-        if self.command == "extract-visuals":
-            return self._visual_rows(elapsed)
-        return self._enrich_rows(elapsed)
-
-    def _enrich_rows(self, elapsed: float) -> list[tuple[str, str]]:
+    def _enrich_lines(self, elapsed: float) -> list[tuple[str, str]]:
         considered = _snapshot_int(self.snapshot, "considered")
+        total = _snapshot_int(self.snapshot, "total", 1)
         task_done = _snapshot_int(self.snapshot, "llm_task_calls_completed")
         llm_planned = _snapshot_int(self.snapshot, "llm_calls_planned")
         live_calls = _snapshot_int(self.snapshot, "llm_calls_completed")
@@ -339,55 +320,65 @@ class RunDashboard:
         live_output = _snapshot_int(self.snapshot, "llm_live_output_tokens")
         cached_input = _snapshot_int(self.snapshot, "llm_cached_input_tokens")
         cached_output = _snapshot_int(self.snapshot, "llm_cached_output_tokens")
-        current_task = str(self.snapshot.get("llm_current_task") or "-")
-        current_page = str(self.snapshot.get("llm_current_page") or "-")
-        current_chunk = str(self.snapshot.get("llm_current_chunk") or "-")
-        chunk_count = str(self.snapshot.get("llm_chunk_count") or "-")
+        failed = _style_count(_snapshot_int(self.snapshot, "failed"), warn=True)
+        in_flight = _snapshot_int(self.snapshot, "llm_calls_in_flight")
+        retries = _style_count(_snapshot_int(self.snapshot, "llm_retries"), warn=True)
+        rate_limits = _style_count(_snapshot_int(self.snapshot, "llm_rate_limits"), warn=True)
         return [
+            ("header", self._header()),
+            ("progress", self._progress_line("Pages", considered, total, "pages", elapsed)),
             (
-                "Work",
+                "work",
                 (
-                    f"processed {_snapshot_int(self.snapshot, 'processed'):,}   "
-                    f"skipped {_snapshot_int(self.snapshot, 'skipped'):,}   "
-                    f"failed {_style_count(_snapshot_int(self.snapshot, 'failed'), warn=True)}"
+                    f"[bold cyan]Work      [/bold cyan] processed "
+                    f"{_snapshot_int(self.snapshot, 'processed'):,}   skipped "
+                    f"{_snapshot_int(self.snapshot, 'skipped'):,}   failed {failed}"
                 ),
             ),
             (
-                "Throughput",
+                "llm",
                 (
-                    f"pages {_fmt_rate(considered / elapsed if elapsed else 0)}   "
-                    f"live LLM {_fmt_rate(live_calls / elapsed if elapsed else 0)}   "
-                    f"cache {_fmt_rate(cached_calls / elapsed if elapsed else 0)}"
+                    f"[bold cyan]LLM       [/bold cyan] tasks {task_done:,}/{llm_planned:,}   "
+                    f"live {live_calls:,}   in-flight {in_flight:,}   cached {cached_calls:,}   "
+                    f"retries {retries}   429s {rate_limits}"
                 ),
             ),
             (
-                "LLM",
+                "tokens",
                 (
-                    f"{task_done:,} / {llm_planned:,} tasks   "
-                    f"live {live_calls:,}   "
-                    f"in-flight {_snapshot_int(self.snapshot, 'llm_calls_in_flight'):,}   "
-                    f"cached {cached_calls:,}"
+                    f"[bold cyan]Tokens    [/bold cyan] live in {live_input:,} "
+                    f"out {live_output:,}   avg {_avg_tokens(live_input, live_calls)}/"
+                    f"{_avg_tokens(live_output, live_calls)}   cache saved in "
+                    f"{cached_input:,} out {cached_output:,}"
                 ),
             ),
             (
-                "Tokens",
+                "speed",
                 (
-                    f"live in {live_input:,} out {live_output:,} "
-                    f"avg {_avg_tokens(live_input, live_calls)}/"
-                    f"{_avg_tokens(live_output, live_calls)}   "
-                    f"cache saved in {cached_input:,} out {cached_output:,}"
+                    f"[bold cyan]Speed     [/bold cyan] pages "
+                    f"{_fmt_rate(considered / elapsed if elapsed else 0)}   live LLM "
+                    f"{_fmt_rate(live_calls / elapsed if elapsed else 0)}   cache "
+                    f"{_fmt_rate(cached_calls / elapsed if elapsed else 0)}"
                 ),
             ),
-            self._health_row(),
-            self._adaptive_row(),
+            ("adaptive", f"[bold cyan]Adaptive  [/bold cyan] {self._adaptive_text()}"),
             (
-                "Current",
-                f"{current_task}   page {current_page}   chunk {current_chunk}/{chunk_count}",
+                "current",
+                (
+                    f"[bold cyan]Current   [/bold cyan] "
+                    f"{self.snapshot.get('llm_current_task') or '-'}   page "
+                    f"{self.snapshot.get('llm_current_page') or '-'}   chunk "
+                    f"{self.snapshot.get('llm_current_chunk') or '-'}/"
+                    f"{self.snapshot.get('llm_chunk_count') or '-'}"
+                ),
             ),
         ]
 
-    def _visual_rows(self, elapsed: float) -> list[tuple[str, str]]:
-        images_done = _snapshot_int(self.snapshot, "images_completed")
+    def _visual_lines(self, elapsed: float) -> list[tuple[str, str]]:
+        done = _snapshot_int(self.snapshot, "images_completed")
+        total = _snapshot_int(self.snapshot, "images_considered") or _snapshot_int(
+            self.snapshot, "images_discovered", 1
+        )
         live_calls = _snapshot_int(self.snapshot, "llm_calls_completed")
         live_input = _snapshot_int(self.snapshot, "llm_live_input_tokens") or _snapshot_int(
             self.snapshot, "llm_input_tokens"
@@ -395,218 +386,163 @@ class RunDashboard:
         live_output = _snapshot_int(self.snapshot, "llm_live_output_tokens") or _snapshot_int(
             self.snapshot, "llm_output_tokens"
         )
-        current_page = str(self.snapshot.get("current_page") or "-")
-        current_image = str(self.snapshot.get("current_image") or "-")
-        current_status = str(self.snapshot.get("current_status") or "-")
+        failed = _style_count(_snapshot_int(self.snapshot, "failed"), warn=True)
+        in_flight = _snapshot_int(self.snapshot, "llm_calls_in_flight")
+        retries = _style_count(_snapshot_int(self.snapshot, "llm_retries"), warn=True)
+        rate_limits = _style_count(_snapshot_int(self.snapshot, "llm_rate_limits"), warn=True)
         return [
+            ("header", self._header()),
+            ("progress", self._progress_line("Images", done, total, "images", elapsed)),
             (
-                "Pages",
+                "pages",
                 (
-                    f"{_snapshot_int(self.snapshot, 'processed'):,} / "
-                    f"{_snapshot_int(self.snapshot, 'considered'):,} done   "
-                    f"skipped {_snapshot_int(self.snapshot, 'skipped'):,}   "
-                    f"failed {_style_count(_snapshot_int(self.snapshot, 'failed'), warn=True)}"
+                    f"[bold cyan]Pages     [/bold cyan] "
+                    f"{_snapshot_int(self.snapshot, 'processed'):,}/"
+                    f"{_snapshot_int(self.snapshot, 'considered'):,} done   skipped "
+                    f"{_snapshot_int(self.snapshot, 'skipped'):,}   failed {failed}"
                 ),
             ),
             (
-                "Throughput",
+                "llm",
                 (
-                    f"images {_fmt_rate(images_done / elapsed if elapsed else 0)}   "
-                    f"live LLM {_fmt_rate(live_calls / elapsed if elapsed else 0)}   "
-                    f"tokens {_fmt_rate((live_input + live_output) / elapsed if elapsed else 0)}"
+                    f"[bold cyan]LLM       [/bold cyan] live {live_calls:,}   "
+                    f"in-flight {in_flight:,}   cached "
+                    f"{_snapshot_int(self.snapshot, 'images_cached'):,}   "
+                    f"retries {retries}   429s {rate_limits}"
                 ),
             ),
             (
-                "LLM",
+                "tokens",
                 (
-                    f"{live_calls:,} calls   "
-                    f"in-flight {_snapshot_int(self.snapshot, 'llm_calls_in_flight'):,}   "
-                    f"cached {_snapshot_int(self.snapshot, 'images_cached'):,}"
-                ),
-            ),
-            (
-                "Tokens",
-                (
-                    f"input {live_input:,}   output {live_output:,}   "
-                    f"avg {_avg_tokens(live_input, live_calls)}/"
+                    f"[bold cyan]Tokens    [/bold cyan] input {live_input:,}   "
+                    f"output {live_output:,}   avg {_avg_tokens(live_input, live_calls)}/"
                     f"{_avg_tokens(live_output, live_calls)}"
                 ),
             ),
-            self._health_row(),
-            self._adaptive_row(),
-            ("Current", f"{current_status}   page {current_page}   image {current_image}"),
+            (
+                "speed",
+                (
+                    f"[bold cyan]Speed     [/bold cyan] images "
+                    f"{_fmt_rate(done / elapsed if elapsed else 0)}   live LLM "
+                    f"{_fmt_rate(live_calls / elapsed if elapsed else 0)}   tokens "
+                    f"{_fmt_rate((live_input + live_output) / elapsed if elapsed else 0)}"
+                ),
+            ),
+            ("adaptive", f"[bold cyan]Adaptive  [/bold cyan] {self._adaptive_text()}"),
+            (
+                "current",
+                (
+                    f"[bold cyan]Current   [/bold cyan] page "
+                    f"{self.snapshot.get('current_page') or '-'}   image "
+                    f"{self.snapshot.get('current_image') or '-'}   "
+                    f"{self.snapshot.get('current_status') or '-'}"
+                ),
+            ),
         ]
 
-    def _health_row(self) -> tuple[str, str]:
-        failures = _snapshot_int(self.snapshot, "failed") + _snapshot_int(
-            self.snapshot, "images_failed"
-        )
-        return (
-            "Health",
-            (
-                f"retries {_style_count(_snapshot_int(self.snapshot, 'llm_retries'), warn=True)}   "
-                f"429s "
-                f"{_style_count(_snapshot_int(self.snapshot, 'llm_rate_limits'), warn=True)}   "
-                f"failures {_style_count(failures, warn=True)}"
-            ),
-        )
-
-    def _adaptive_row(self) -> tuple[str, str]:
-        raw = self.snapshot.get("llm_adaptive_concurrency")
-        if not isinstance(raw, dict) or not raw:
-            initial = _snapshot_int(self.snapshot, "llm_adaptive_initial_concurrency")
-            maximum = _snapshot_int(self.snapshot, "llm_max_concurrency")
-            worker_cap = _snapshot_int(self.snapshot, "llm_worker_cap")
-            if maximum:
-                details = f"initial {initial}/{maximum}"
-                if worker_cap:
-                    details = f"{details}   page workers {worker_cap}"
-                return "Adaptive", details
-            return "Adaptive", "-"
-        parts = []
-        for key, value in sorted(raw.items()):
-            if not isinstance(value, dict):
-                continue
-            model = key.split(":")[-1]
-            current = value.get("current", "-")
-            maximum = value.get("max", "-")
-            cooldown = _snapshot_float(value, "cooldown_seconds")
-            suffix = f" cooldown {_fmt_duration(cooldown)}" if cooldown > 0 else ""
-            parts.append(f"{model} {current}/{maximum}{suffix}")
-        return "Adaptive", "   ".join(parts) if parts else "-"
-
-
-class ArtifactDashboard:
-    def __init__(self, *, command: str, dataset: str, console: Console) -> None:
-        self.command = command
-        self.dataset = dataset
-        self.console = console
-        self.started_at = time.monotonic()
-        self.snapshot: dict[str, object] = {}
-
-    def update(self, snapshot: dict[str, object]) -> None:
-        self.snapshot.update(snapshot)
-
-    def render(self) -> Panel:
-        elapsed = time.monotonic() - self.started_at
-        done, total, unit = self._primary_progress()
-        percent = (done / total * 100) if total else 0
-        eta = elapsed / done * (total - done) if done > 0 and total > done else None
-        table = Table.grid(expand=True)
-        table.add_column("group", style="bold cyan", no_wrap=True, width=11)
-        table.add_column("value", ratio=1)
-        table.add_row(
-            "Progress",
-            (
-                f"[bold]{done:,} / {total:,}[/bold] {unit}   "
-                f"[cyan]{percent:.1f}%[/cyan]   ETA [dim]{_fmt_duration(eta)}[/dim]   "
-                f"Elapsed [dim]{_fmt_duration(elapsed)}[/dim]"
-            ),
-        )
-        for row in self._rows(elapsed):
-            table.add_row(*row)
-        table.add_row(
-            "",
-            ProgressBar(total=100, completed=max(0, min(100, percent)), width=None),
-        )
-        return Panel(
-            table,
-            title=f"[bold cyan]{self.command}[/bold cyan]",
-            subtitle=Text.assemble((self.dataset, "bold"), "  ", ("local", "blue")),
-            border_style="cyan",
-        )
-
-    def _primary_progress(self) -> tuple[int, int, str]:
-        if self.command == "report":
-            return (
-                _snapshot_int(self.snapshot, "reports_written"),
-                max(1, _snapshot_int(self.snapshot, "reports_planned", 1)),
-                "reports",
-            )
-        return (
-            _snapshot_int(self.snapshot, "pages_checked"),
-            max(1, _snapshot_int(self.snapshot, "pages_total", 1)),
-            "pages",
-        )
-
-    def _rows(self, elapsed: float) -> list[tuple[str, str]]:
-        if self.command == "report":
-            return self._report_rows(elapsed)
-        return self._validate_rows(elapsed)
-
-    def _report_rows(self, elapsed: float) -> list[tuple[str, str]]:
-        written = _snapshot_int(self.snapshot, "reports_written")
+    def _report_lines(self, elapsed: float) -> list[tuple[str, str]]:
+        done = _snapshot_int(self.snapshot, "reports_written")
+        total = _snapshot_int(self.snapshot, "reports_planned", 1)
+        failures = _style_count(_snapshot_int(self.snapshot, "failures"), warn=True)
         return [
+            ("header", self._header()),
+            ("progress", self._progress_line("Reports", done, total, "reports", elapsed)),
             (
-                "Inputs",
+                "inputs",
                 (
-                    f"pages {_snapshot_int(self.snapshot, 'pages_total'):,}   "
-                    f"docs {_snapshot_int(self.snapshot, 'document_rows'):,}   "
-                    f"enrichments {_snapshot_int(self.snapshot, 'enrichments'):,}   "
-                    f"visuals {_snapshot_int(self.snapshot, 'visual_artifacts'):,}"
+                    f"[bold cyan]Inputs    [/bold cyan] pages "
+                    f"{_snapshot_int(self.snapshot, 'pages_total'):,}   docs "
+                    f"{_snapshot_int(self.snapshot, 'document_rows'):,}   enrichments "
+                    f"{_snapshot_int(self.snapshot, 'enrichments'):,}   visuals "
+                    f"{_snapshot_int(self.snapshot, 'visual_artifacts'):,}"
                 ),
             ),
             (
-                "Artifacts",
+                "health",
                 (
-                    f"written {written:,}   "
-                    f"warnings {_snapshot_int(self.snapshot, 'warnings'):,}   "
-                    f"failures {_style_count(_snapshot_int(self.snapshot, 'failures'), warn=True)}"
+                    f"[bold cyan]Health    [/bold cyan] warnings "
+                    f"{_snapshot_int(self.snapshot, 'warnings'):,}   failures {failures}"
                 ),
             ),
-            ("Throughput", f"reports {_fmt_rate(written / elapsed if elapsed else 0)}"),
-            ("Current", str(self.snapshot.get("current_report") or "-")),
+            (
+                "speed",
+                (
+                    f"[bold cyan]Speed     [/bold cyan] reports "
+                    f"{_fmt_rate(done / elapsed if elapsed else 0)}"
+                ),
+            ),
+            (
+                "current",
+                f"[bold cyan]Current   [/bold cyan] {self.snapshot.get('current_report') or '-'}",
+            ),
         ]
 
-    def _validate_rows(self, elapsed: float) -> list[tuple[str, str]]:
+    def _validate_lines(self, elapsed: float) -> list[tuple[str, str]]:
         checked = _snapshot_int(self.snapshot, "pages_checked")
+        total = _snapshot_int(self.snapshot, "pages_total", 1)
+        errors = _style_count(_snapshot_int(self.snapshot, "errors"), warn=True)
+        warnings = _style_count(_snapshot_int(self.snapshot, "warnings"), warn=True)
+        failed = _style_count(_snapshot_int(self.snapshot, "pages_failed"), warn=True)
         return [
+            ("header", self._header()),
+            ("progress", self._progress_line("Pages", checked, total, "pages", elapsed)),
             (
-                "Artifacts",
+                "artifacts",
                 (
-                    f"metadata {_snapshot_int(self.snapshot, 'metadata_checked'):,}   "
-                    f"markdown {_snapshot_int(self.snapshot, 'markdown_checked'):,}   "
-                    f"links {_snapshot_int(self.snapshot, 'links_checked'):,}   "
-                    f"conversion {_snapshot_int(self.snapshot, 'conversion_checked'):,}"
+                    f"[bold cyan]Artifacts [/bold cyan] metadata "
+                    f"{_snapshot_int(self.snapshot, 'metadata_checked'):,}   markdown "
+                    f"{_snapshot_int(self.snapshot, 'markdown_checked'):,}   links "
+                    f"{_snapshot_int(self.snapshot, 'links_checked'):,}   conversion "
+                    f"{_snapshot_int(self.snapshot, 'conversion_checked'):,}"
                 ),
             ),
             (
-                "Health",
+                "health",
                 (
-                    f"errors {_style_count(_snapshot_int(self.snapshot, 'errors'), warn=True)}   "
-                    f"warnings "
-                    f"{_style_count(_snapshot_int(self.snapshot, 'warnings'), warn=True)}   "
-                    f"failed "
-                    f"{_style_count(_snapshot_int(self.snapshot, 'pages_failed'), warn=True)}"
+                    f"[bold cyan]Health    [/bold cyan] errors {errors}   "
+                    f"warnings {warnings}   failed {failed}"
                 ),
             ),
-            ("Throughput", f"pages {_fmt_rate(checked / elapsed if elapsed else 0)}"),
             (
-                "Current",
+                "speed",
                 (
-                    f"page {self.snapshot.get('current_page') or '-'}   "
-                    f"artifact {self.snapshot.get('current_artifact') or '-'}"
+                    f"[bold cyan]Speed     [/bold cyan] pages "
+                    f"{_fmt_rate(checked / elapsed if elapsed else 0)}"
+                ),
+            ),
+            (
+                "current",
+                (
+                    f"[bold cyan]Current   [/bold cyan] page "
+                    f"{self.snapshot.get('current_page') or '-'}   artifact "
+                    f"{self.snapshot.get('current_artifact') or '-'}"
                 ),
             ),
         ]
 
+    def _adaptive_text(self) -> str:
+        raw = self.snapshot.get("llm_adaptive_concurrency")
+        if isinstance(raw, dict) and raw:
+            parts = []
+            for key, value in sorted(raw.items()):
+                if isinstance(value, dict):
+                    parts.append(
+                        f"{key.split(':')[-1]} {value.get('current', '-')}/{value.get('max', '-')}"
+                    )
+            if parts:
+                return "   ".join(parts)
+        maximum = _snapshot_int(self.snapshot, "llm_max_concurrency")
+        if maximum:
+            initial = _snapshot_int(self.snapshot, "llm_adaptive_initial_concurrency")
+            worker_cap = _snapshot_int(self.snapshot, "llm_worker_cap")
+            suffix = f"   page workers {worker_cap}" if worker_cap else ""
+            return f"initial {initial}/{maximum}{suffix}"
+        return "-"
 
-class LiveDashboardUpdater:
-    def __init__(self, dashboard: RunDashboard | ArtifactDashboard, live: Live) -> None:
-        self.dashboard = dashboard
-        self.live = live
-        self.last_rendered_at = 0.0
-        self.min_interval_seconds = 0.25
 
-    def update(self, snapshot: dict[str, object], *, force: bool = False) -> None:
-        self.dashboard.update(snapshot)
-        now = time.monotonic()
-        if force or now - self.last_rendered_at >= self.min_interval_seconds:
-            self.live.update(self.dashboard.render(), refresh=True)
-            self.last_rendered_at = now
-
-    def finish(self) -> None:
-        self.live.update(self.dashboard.render(), refresh=True)
+def _text_bar(percent: float, *, width: int = 30) -> str:
+    filled = max(0, min(width, round(width * percent / 100)))
+    return "[cyan]" + "━" * filled + "╸" + "─" * max(0, width - filled - 1) + "[/cyan]"
 
 
 def _load_runtime_config(
@@ -690,16 +626,15 @@ def validate_cache(
             reports_out=out,
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            dashboard = ArtifactDashboard(
-                command="validate-cache", dataset=cache.name, console=console
-            )
-            with Live(
-                dashboard.render(), console=console, refresh_per_second=4, transient=True
-            ) as live:
-                updater = LiveDashboardUpdater(dashboard, live)
+            with FixedProgressDashboard(
+                command="validate-cache",
+                dataset=cache.name,
+                mode="validate-cache",
+                console=console,
+            ) as dashboard:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    updater.update(snapshot)
+                    dashboard.update(snapshot)
 
                 result = validate_cache_command(
                     config=config,
@@ -710,7 +645,6 @@ def validate_cache(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
-                updater.finish()
         else:
             result = validate_cache_command(
                 config=config,
@@ -807,23 +741,19 @@ def enrich(
             onyx_out=onyx_out,
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            dashboard = RunDashboard(
+            with FixedProgressDashboard(
                 command="enrich",
                 dataset=cache.name,
                 provider=config.llm.provider,
                 model="mixed"
                 if config.llm.task_models or config.llm.task_bundles
                 else config.llm.model,
-                primary_unit="pages",
+                mode="enrich",
                 console=console,
-            )
-            with Live(
-                dashboard.render(), console=console, refresh_per_second=4, transient=True
-            ) as live:
-                updater = LiveDashboardUpdater(dashboard, live)
+            ) as dashboard:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    updater.update(snapshot)
+                    dashboard.update(snapshot)
 
                 result = enrich_command(
                     config=config,
@@ -838,7 +768,6 @@ def enrich(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
-                updater.finish()
         else:
             result = enrich_command(
                 config=config,
@@ -914,21 +843,17 @@ def extract_visuals(
         data["visual_extraction"]["model"] = model
         config = AppConfig.model_validate(data)
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            dashboard = RunDashboard(
+            with FixedProgressDashboard(
                 command="extract-visuals",
                 dataset=cache.name,
                 provider=config.visual_extraction.provider,
                 model=config.visual_extraction.model,
-                primary_unit="images",
+                mode="extract-visuals",
                 console=console,
-            )
-            with Live(
-                dashboard.render(), console=console, refresh_per_second=4, transient=True
-            ) as live:
-                updater = LiveDashboardUpdater(dashboard, live)
+            ) as dashboard:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    updater.update(snapshot)
+                    dashboard.update(snapshot)
 
                 result = extract_visuals_command(
                     config=config,
@@ -941,7 +866,6 @@ def extract_visuals(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
-                updater.finish()
         else:
             result = extract_visuals_command(
                 config=config,
@@ -1002,14 +926,12 @@ def report(
             reports_out=out,
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            dashboard = ArtifactDashboard(command="report", dataset=cache.name, console=console)
-            with Live(
-                dashboard.render(), console=console, refresh_per_second=4, transient=True
-            ) as live:
-                updater = LiveDashboardUpdater(dashboard, live)
+            with FixedProgressDashboard(
+                command="report", dataset=cache.name, mode="report", console=console
+            ) as dashboard:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    updater.update(snapshot)
+                    dashboard.update(snapshot)
 
                 result = report_command(
                     config=config,
@@ -1020,7 +942,6 @@ def report(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
-                updater.finish()
         else:
             result = report_command(
                 config=config,
