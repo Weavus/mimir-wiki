@@ -234,6 +234,8 @@ class VisualExtractionConfig(BaseModel):
     min_image_pixels: int = 4096
     adaptive_page_caps: bool = True
     report_page_max_images: int = 12
+    representative_group_sampling: bool = True
+    max_images_per_representative_group: int = 3
 
 
 class RedactionConfig(BaseModel):

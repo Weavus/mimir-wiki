@@ -48,6 +48,7 @@ from mimir_wiki.visual_extraction import (
     load_visual_extraction,
     rank_visual_sources,
     run_extract_visuals_for_page,
+    select_visual_sources,
     visual_source_content_sha256,
     visual_extraction_path,
 )
@@ -923,6 +924,7 @@ def extract_visuals_command(
     images_omitted_by_page_cap = 0
     pages_capped = 0
     pages_adaptive_capped = 0
+    images_omitted_by_grouping = 0
     omitted_image_records: list[dict[str, Any]] = []
 
     def emit_progress(
@@ -962,12 +964,10 @@ def extract_visuals_command(
         source_count = len(all_sources)
         configured_max_images = config.visual_extraction.max_images_per_page
         max_images = effective_visual_page_cap(bundle, config)
-        sources = ranked_sources[:max_images] if max_images >= 0 else ranked_sources
-        selected_source_ids = {source.source for source in sources}
-        omitted_sources = [
-            source for source in ranked_sources if source.source not in selected_source_ids
-        ]
-        omitted_by_cap = max(0, source_count - len(sources))
+        sources, omitted_by_grouping, omitted_by_cap_sources = select_visual_sources(
+            bundle, ranked_sources, cap=max_images, config=config
+        )
+        omitted_by_cap = len(omitted_by_cap_sources)
         if not sources:
             skipped += 1
             emit_progress(current_page=current_page, current_status="no_images")
@@ -975,6 +975,18 @@ def extract_visuals_command(
         considered += 1
         images_discovered += source_count
         images_considered += len(sources)
+        if omitted_by_grouping:
+            images_omitted_by_grouping += len(omitted_by_grouping)
+            omitted_image_records.extend(
+                _visual_omitted_records(
+                    bundle=bundle,
+                    sources=omitted_by_grouping,
+                    run_id=context.run_id,
+                    dataset_name=dataset_name,
+                    generated_at=context.generated_at,
+                    reason="representative_group_cap",
+                )
+            )
         if omitted_by_cap:
             pages_capped += 1
             images_omitted_by_page_cap += omitted_by_cap
@@ -983,7 +995,7 @@ def extract_visuals_command(
             omitted_image_records.extend(
                 _visual_omitted_records(
                     bundle=bundle,
-                    sources=omitted_sources,
+                    sources=omitted_by_cap_sources,
                     run_id=context.run_id,
                     dataset_name=dataset_name,
                     generated_at=context.generated_at,
@@ -1116,6 +1128,7 @@ def extract_visuals_command(
             "visual_images_failed": images_failed,
             "visual_images_skipped": images_skipped,
             "visual_images_omitted_by_page_cap": images_omitted_by_page_cap,
+            "visual_images_omitted_by_grouping": images_omitted_by_grouping,
             "visual_omitted_inventory_records": len(omitted_image_records),
             "llm_calls": len(context.llm_usage),
             "llm_retries": context.llm_retries,

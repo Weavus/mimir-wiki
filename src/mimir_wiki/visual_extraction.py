@@ -8,6 +8,7 @@ import mimetypes
 import re
 import struct
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,6 +157,52 @@ def effective_visual_page_cap(bundle: PageBundle, config: AppConfig) -> int:
     if is_report_like_page(bundle):
         return min(configured_cap, config.visual_extraction.report_page_max_images)
     return configured_cap
+
+
+def select_visual_sources(
+    bundle: PageBundle, ranked_sources: list[VisualSource], *, cap: int, config: AppConfig
+) -> tuple[list[VisualSource], list[VisualSource], list[VisualSource]]:
+    selected: list[VisualSource] = []
+    grouped_out: list[VisualSource] = []
+    group_counts: Counter[str] = Counter()
+    group_limit = config.visual_extraction.max_images_per_representative_group
+    for source in ranked_sources:
+        if cap >= 0 and len(selected) >= cap:
+            continue
+        group_key = representative_group_key(bundle, source, config=config)
+        if group_key and group_counts[group_key] >= group_limit:
+            grouped_out.append(source)
+            continue
+        selected.append(source)
+        if group_key:
+            group_counts[group_key] += 1
+    selected_ids = {source.source for source in selected}
+    grouped_ids = {source.source for source in grouped_out}
+    capped_out = [
+        source
+        for source in ranked_sources
+        if source.source not in selected_ids and source.source not in grouped_ids
+    ]
+    return selected, grouped_out, capped_out
+
+
+def representative_group_key(
+    bundle: PageBundle, source: VisualSource, *, config: AppConfig
+) -> str | None:
+    if not config.visual_extraction.representative_group_sampling:
+        return None
+    text = " ".join(
+        part for part in [source.source, source.nearby_heading or "", source.context] if part
+    ).lower()
+    if not is_report_like_page(bundle) and not re.search(
+        r"dashboard|chart|graph|metric|cloudwatch|splunk|grafana|kibana", text
+    ):
+        return None
+    normalized = re.sub(r"\b\d{1,4}[-_:./]?\d{0,4}[-_:./]?\d{0,4}\b", "#", text)
+    normalized = re.sub(r"image[-_. ]*#", "image", normalized)
+    normalized = re.sub(r"[^a-z#]+", " ", normalized)
+    tokens = [token for token in normalized.split() if token not in {"attachments", "pages"}]
+    return " ".join(tokens[:12]) or None
 
 
 def is_report_like_page(bundle: PageBundle) -> bool:

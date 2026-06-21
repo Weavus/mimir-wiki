@@ -830,6 +830,52 @@ def test_extract_visuals_applies_report_page_cap(tiny_cache: Path, tmp_path: Pat
     assert result.summary.counts["visual_pages_adaptive_capped"] == 1
 
 
+def test_extract_visuals_samples_representative_visual_groups(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "Weekly Operations Report"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    for index in range(5):
+        (tiny_cache / "pages" / "123" / "attachments" / f"nginx-chart-{index}.png").write_bytes(
+            generate_probe_png()
+        )
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n"
+        + "\n".join(
+            f"![Nginx dashboard chart {index}](attachments/nginx-chart-{index}.png)"
+            for index in range(5)
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+            "visual_extraction": {
+                "max_images_per_page": 20,
+                "report_page_max_images": 20,
+                "max_images_per_representative_group": 2,
+            },
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=True,
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["visual_images_discovered"] == 5
+    assert result.summary.counts["visual_images_considered"] == 2
+    assert result.summary.counts["visual_images_omitted_by_grouping"] == 3
+    assert result.summary.counts["visual_images_omitted_by_page_cap"] == 0
+
+
 def test_extract_visuals_skips_obvious_low_value_images(
     tiny_cache: Path, tmp_path: Path, monkeypatch
 ) -> None:
