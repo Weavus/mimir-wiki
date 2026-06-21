@@ -27,8 +27,19 @@ from mimir_wiki.hierarchy import build_hierarchy_context, build_tree_counts
 from mimir_wiki.llm.base import LLMError, LLMProvider, RateLimitedLLMClient, provider_for_config
 from mimir_wiki.reports import (
     VisualReportPage,
+    write_attachment_followups_report,
     write_cache_validation_report,
+    write_document_types_report,
+    write_duplicate_candidates_report,
     write_enrichment_reports,
+    write_enrichment_summary,
+    write_high_value_sources_report,
+    write_high_value_subtrees_report,
+    write_llm_usage_report,
+    write_missing_owners_report,
+    write_page_failures_report,
+    write_stale_or_deprecated_report,
+    write_visual_extraction_report,
 )
 from mimir_wiki.schemas import (
     DocumentIndexRow,
@@ -296,10 +307,11 @@ def validate_cache_command(
     profile: str | None,
     dry_run: bool,
     limit: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> CommandResult:
     reader = CacheReader(cache_path)
-    result = reader.validate(limit=limit)
+    result = reader.validate(limit=limit, progress_callback=progress_callback)
     dataset_name = result.dataset_name
     context = RunContext("validate-cache", config, cache_path, dataset_name, profile, dry_run)
     output_paths: list[Path] = []
@@ -1441,6 +1453,7 @@ def report_command(
     profile: str | None,
     dry_run: bool,
     limit: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> CommandResult:
     reader = CacheReader(cache_path)
@@ -1450,45 +1463,143 @@ def report_command(
     knowledge_dir = Path(config.paths.knowledge)
     reports_dir = Path(config.paths.reports)
     output_paths: list[Path] = []
+    document_rows: list[DocumentIndexRow] = []
+    quality_rows: list[QualityScoreRow] = []
+    enrichments: list[Enrichment] = []
+    visual_pages: list[VisualReportPage] = []
+    failures: list[PageFailure] = []
+
+    reports_planned = 12
+    reports_written = 0
+
+    def emit_progress(current_report: str = "-") -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "reports_planned": reports_planned,
+                "reports_written": reports_written,
+                "pages_total": validation.pages_total,
+                "document_rows": len(document_rows),
+                "enrichments": len(enrichments),
+                "visual_artifacts": len(visual_pages),
+                "warnings": sum(1 for issue in validation.issues if issue.level == "warning"),
+                "failures": validation.pages_failed + len(failures),
+                "current_report": current_report,
+            }
+        )
+
+    emit_progress("loading inputs")
     document_index = knowledge_dir / "document_index.jsonl"
     quality_scores = knowledge_dir / "quality_scores.jsonl"
     if document_index.exists() and quality_scores.exists():
         document_rows = _read_document_rows(document_index)
         quality_rows = _read_quality_rows(quality_scores)
-    else:
-        document_rows = []
-        quality_rows = []
     enrichments = _read_enrichments(reader, limit)
     visual_pages = _visual_report_pages(reader.iter_pages(limit=limit))
     llm_usage = _read_run_llm_usage(Path(config.paths.runs))
     failures = _read_run_failures(Path(config.paths.runs))
+    emit_progress("inputs loaded")
     if not dry_run:
-        output_paths.append(write_cache_validation_report(validation, reports_dir))
-        _artifact_event(
-            event_callback,
-            run_id=context.run_id,
-            artifact_type="cache_validation_report",
-            path=output_paths[-1],
-        )
-        report_paths = write_enrichment_reports(
-            out_dir=reports_dir,
-            dataset_name=dataset_name,
-            document_rows=document_rows,
-            quality_rows=quality_rows,
-            enrichments=enrichments,
-            llm_usage=llm_usage,
-            failures=failures,
-            visual_pages=visual_pages,
-        )
-        output_paths.extend(report_paths)
-        for path in report_paths:
+        report_writers: list[tuple[str, Callable[[], Path], str]] = [
+            (
+                "cache_validation.md",
+                lambda: write_cache_validation_report(validation, reports_dir),
+                "cache_validation_report",
+            ),
+            (
+                "enrichment_summary.md",
+                lambda: write_enrichment_summary(
+                    out_dir=reports_dir,
+                    dataset_name=dataset_name,
+                    document_rows=document_rows,
+                    quality_rows=quality_rows,
+                ),
+                "report",
+            ),
+            (
+                "document_types.md",
+                lambda: write_document_types_report(
+                    out_dir=reports_dir, document_rows=document_rows
+                ),
+                "report",
+            ),
+            (
+                "stale_or_deprecated.md",
+                lambda: write_stale_or_deprecated_report(
+                    out_dir=reports_dir, document_rows=document_rows
+                ),
+                "report",
+            ),
+            (
+                "high_value_sources.md",
+                lambda: write_high_value_sources_report(
+                    out_dir=reports_dir,
+                    document_rows=document_rows,
+                    quality_rows=quality_rows,
+                ),
+                "report",
+            ),
+            (
+                "missing_owners.md",
+                lambda: write_missing_owners_report(out_dir=reports_dir, enrichments=enrichments),
+                "report",
+            ),
+            (
+                "high_value_subtrees.md",
+                lambda: write_high_value_subtrees_report(
+                    out_dir=reports_dir, enrichments=enrichments
+                ),
+                "report",
+            ),
+            (
+                "attachment_followups.md",
+                lambda: write_attachment_followups_report(
+                    out_dir=reports_dir, document_rows=document_rows
+                ),
+                "report",
+            ),
+            (
+                "duplicate_candidates.md",
+                lambda: write_duplicate_candidates_report(
+                    out_dir=reports_dir, document_rows=document_rows
+                ),
+                "report",
+            ),
+            (
+                "llm_usage.md",
+                lambda: write_llm_usage_report(out_dir=reports_dir, usage=llm_usage),
+                "report",
+            ),
+            (
+                "page_failures.md",
+                lambda: write_page_failures_report(out_dir=reports_dir, failures=failures),
+                "report",
+            ),
+            (
+                "visual_extraction.md",
+                lambda: write_visual_extraction_report(
+                    out_dir=reports_dir, dataset_name=dataset_name, pages=visual_pages
+                ),
+                "report",
+            ),
+        ]
+        for report_name, writer, artifact_type in report_writers:
+            emit_progress(report_name)
+            path = writer()
+            output_paths.append(path)
+            reports_written += 1
             _artifact_event(
                 event_callback,
                 run_id=context.run_id,
-                artifact_type="report",
-                path=path,
+                artifact_type=artifact_type,
+                path=output_paths[-1],
             )
+            emit_progress(report_name)
         context.files_written += len(output_paths)
+    else:
+        reports_written = reports_planned
+        emit_progress("planned")
     exit_code = EXIT_SUCCESS if validation.ok else EXIT_USER_ERROR
     status = "success" if validation.ok else "failed"
     summary = context.build_summary(

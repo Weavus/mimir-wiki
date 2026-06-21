@@ -11,7 +11,6 @@ import typer
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
@@ -372,6 +371,121 @@ class RunDashboard:
         return "Adaptive", "   ".join(parts) if parts else "-"
 
 
+class ArtifactDashboard:
+    def __init__(self, *, command: str, dataset: str, console: Console) -> None:
+        self.command = command
+        self.dataset = dataset
+        self.console = console
+        self.started_at = time.monotonic()
+        self.snapshot: dict[str, object] = {}
+
+    def update(self, snapshot: dict[str, object]) -> None:
+        self.snapshot.update(snapshot)
+
+    def render(self) -> Panel:
+        elapsed = time.monotonic() - self.started_at
+        done, total, unit = self._primary_progress()
+        percent = (done / total * 100) if total else 0
+        eta = elapsed / done * (total - done) if done > 0 and total > done else None
+        table = Table.grid(expand=True)
+        table.add_column("group", style="bold cyan", no_wrap=True, width=11)
+        table.add_column("value", ratio=1)
+        table.add_row(
+            "Progress",
+            (
+                f"[bold]{done:,} / {total:,}[/bold] {unit}   "
+                f"[cyan]{percent:.1f}%[/cyan]   ETA [dim]{_fmt_duration(eta)}[/dim]   "
+                f"Elapsed [dim]{_fmt_duration(elapsed)}[/dim]"
+            ),
+        )
+        for row in self._rows(elapsed):
+            table.add_row(*row)
+        table.add_row(
+            "",
+            ProgressBar(total=100, completed=max(0, min(100, percent)), width=None),
+        )
+        return Panel(
+            table,
+            title=f"[bold cyan]{self.command}[/bold cyan]",
+            subtitle=Text.assemble((self.dataset, "bold"), "  ", ("local", "blue")),
+            border_style="cyan",
+        )
+
+    def _primary_progress(self) -> tuple[int, int, str]:
+        if self.command == "report":
+            return (
+                _snapshot_int(self.snapshot, "reports_written"),
+                max(1, _snapshot_int(self.snapshot, "reports_planned", 1)),
+                "reports",
+            )
+        return (
+            _snapshot_int(self.snapshot, "pages_checked"),
+            max(1, _snapshot_int(self.snapshot, "pages_total", 1)),
+            "pages",
+        )
+
+    def _rows(self, elapsed: float) -> list[tuple[str, str]]:
+        if self.command == "report":
+            return self._report_rows(elapsed)
+        return self._validate_rows(elapsed)
+
+    def _report_rows(self, elapsed: float) -> list[tuple[str, str]]:
+        written = _snapshot_int(self.snapshot, "reports_written")
+        return [
+            (
+                "Inputs",
+                (
+                    f"pages {_snapshot_int(self.snapshot, 'pages_total'):,}   "
+                    f"docs {_snapshot_int(self.snapshot, 'document_rows'):,}   "
+                    f"enrichments {_snapshot_int(self.snapshot, 'enrichments'):,}   "
+                    f"visuals {_snapshot_int(self.snapshot, 'visual_artifacts'):,}"
+                ),
+            ),
+            (
+                "Artifacts",
+                (
+                    f"written {written:,}   "
+                    f"warnings {_snapshot_int(self.snapshot, 'warnings'):,}   "
+                    f"failures {_style_count(_snapshot_int(self.snapshot, 'failures'), warn=True)}"
+                ),
+            ),
+            ("Throughput", f"reports {_fmt_rate(written / elapsed if elapsed else 0)}"),
+            ("Current", str(self.snapshot.get("current_report") or "-")),
+        ]
+
+    def _validate_rows(self, elapsed: float) -> list[tuple[str, str]]:
+        checked = _snapshot_int(self.snapshot, "pages_checked")
+        return [
+            (
+                "Artifacts",
+                (
+                    f"metadata {_snapshot_int(self.snapshot, 'metadata_checked'):,}   "
+                    f"markdown {_snapshot_int(self.snapshot, 'markdown_checked'):,}   "
+                    f"links {_snapshot_int(self.snapshot, 'links_checked'):,}   "
+                    f"conversion {_snapshot_int(self.snapshot, 'conversion_checked'):,}"
+                ),
+            ),
+            (
+                "Health",
+                (
+                    f"errors {_style_count(_snapshot_int(self.snapshot, 'errors'), warn=True)}   "
+                    f"warnings "
+                    f"{_style_count(_snapshot_int(self.snapshot, 'warnings'), warn=True)}   "
+                    f"failed "
+                    f"{_style_count(_snapshot_int(self.snapshot, 'pages_failed'), warn=True)}"
+                ),
+            ),
+            ("Throughput", f"pages {_fmt_rate(checked / elapsed if elapsed else 0)}"),
+            (
+                "Current",
+                (
+                    f"page {self.snapshot.get('current_page') or '-'}   "
+                    f"artifact {self.snapshot.get('current_artifact') or '-'}"
+                ),
+            ),
+        ]
+
+
 def _load_runtime_config(
     *,
     config_path: Path | None,
@@ -453,23 +567,24 @@ def validate_cache(
             reports_out=out,
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            with Progress(
-                TextColumn("[bold blue]validate-cache"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                console=console,
-            ) as progress:
-                task_id = progress.add_task("cache", total=1)
+            dashboard = ArtifactDashboard(
+                command="validate-cache", dataset=cache.name, console=console
+            )
+            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
+
+                def progress_callback(snapshot: dict[str, object]) -> None:
+                    dashboard.update(snapshot)
+                    live.update(dashboard.render())
+
                 result = validate_cache_command(
                     config=config,
                     cache_path=cache,
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
+                    progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
-                progress.update(task_id, completed=1)
         else:
             result = validate_cache_command(
                 config=config,
@@ -755,23 +870,22 @@ def report(
             reports_out=out,
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
-            with Progress(
-                TextColumn("[bold blue]report"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                console=console,
-            ) as progress:
-                task_id = progress.add_task("reports", total=1)
+            dashboard = ArtifactDashboard(command="report", dataset=cache.name, console=console)
+            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
+
+                def progress_callback(snapshot: dict[str, object]) -> None:
+                    dashboard.update(snapshot)
+                    live.update(dashboard.render())
+
                 result = report_command(
                     config=config,
                     cache_path=cache,
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
+                    progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
-                progress.update(task_id, completed=1)
         else:
             result = report_command(
                 config=config,

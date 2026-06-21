@@ -99,10 +99,10 @@ Filter and output options:
 - `--include-source-content / --no-include-source-content`: include or omit cleaned source Markdown in Onyx files.
 - `--redaction redact|fail|off`: redact likely secrets, fail if found, or disable redaction.
 
-Interactive progress output uses a compact live dashboard. It groups page
-progress, throughput, LLM calls, retry/rate-limit health, adaptive per-model
-concurrency and current page/task/chunk. `--json`, `--quiet`, CI and redirected
-output keep script-friendly non-interactive output.
+Interactive progress output uses a compact live dashboard. For `enrich` it
+groups page progress, throughput, LLM calls, retry/rate-limit health, adaptive
+per-model concurrency and current page/task/chunk. `--json`, `--quiet`, CI and
+redirected output keep script-friendly non-interactive output.
 
 `enrich` is the command that creates or refreshes knowledge artifacts. It reads
 source cache pages, writes `pages/{page_id}/enrichment.json`, rewrites stable
@@ -243,6 +243,10 @@ images but still be a poor OCR choice if `ocr_text_matched` is false.
 ## `report`
 
 Regenerate reports from the current cache, knowledge indexes and run artifacts.
+
+Interactive progress output uses a smaller local-artifact dashboard with report
+progress, input artifact counts, warnings/failures and the current report being
+written.
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki report \

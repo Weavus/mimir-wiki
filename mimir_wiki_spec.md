@@ -3777,9 +3777,10 @@ the longer-term design intent above.
 ### 30.1 Implemented
 
 - [x] Python package, CLI entry point, tests and quality tooling.
-- [x] Interactive Rich dashboards for long-running `enrich` and
-  `extract-visuals` commands with ETA, throughput, in-flight LLM calls, retry
-  and rate-limit health, adaptive concurrency state and current work.
+- [x] Interactive Rich dashboards for long-running commands. `enrich` and
+  `extract-visuals` include ETA, throughput, in-flight LLM calls, retry and
+  rate-limit health, adaptive concurrency state and current work; `validate-cache`
+  and `report` use smaller local-artifact dashboards.
 - [x] Cache reader and validator for observed `mimir-confluence` exports.
 - [x] Config loading with defaults, YAML, profiles, `.env`, environment
   variables and CLI overrides.

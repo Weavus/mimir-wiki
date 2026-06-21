@@ -171,9 +171,11 @@ Common options:
 - `--verbose`: include tracebacks for unexpected errors.
 - `--log-file PATH`: write JSONL command, page, retry, cancellation, and artifact events.
 
-Interactive `enrich` and `extract-visuals` runs show a live dashboard with ETA,
-throughput, in-flight LLM calls, retry/rate-limit health, adaptive concurrency
-state and current work. Use `--json` and `--quiet` for script-friendly output.
+Interactive long-running commands show live dashboards. `enrich` and
+`extract-visuals` include ETA, throughput, in-flight LLM calls,
+retry/rate-limit health, adaptive concurrency state and current work.
+`validate-cache` and `report` use smaller local-artifact dashboards. Use `--json`
+and `--quiet` for script-friendly output.
 
 `enrich` options:
 

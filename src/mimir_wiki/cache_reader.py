@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -199,11 +200,43 @@ class CacheReader:
                 break
         return pages
 
-    def validate(self, *, limit: int | None = None) -> ValidationResult:
+    def validate(
+        self,
+        *,
+        limit: int | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> ValidationResult:
         issues: list[ValidationIssue] = []
         dataset: Dataset | None = None
         summary: ManifestSummary | None = None
         manifest_rows: list[ManifestRow] = []
+        pages_checked = 0
+        pages_valid = 0
+        pages_failed = 0
+        metadata_checked = 0
+        markdown_checked = 0
+        links_checked = 0
+        conversion_checked = 0
+
+        def emit_progress(*, current_page: str = "-", current_artifact: str = "-") -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "pages_total": len(manifest_rows[:limit]) if manifest_rows else 0,
+                    "pages_checked": pages_checked,
+                    "pages_valid": pages_valid,
+                    "pages_failed": pages_failed,
+                    "metadata_checked": metadata_checked,
+                    "markdown_checked": markdown_checked,
+                    "links_checked": links_checked,
+                    "conversion_checked": conversion_checked,
+                    "errors": sum(1 for issue in issues if issue.level == "error"),
+                    "warnings": sum(1 for issue in issues if issue.level == "warning"),
+                    "current_page": current_page,
+                    "current_artifact": current_artifact,
+                }
+            )
 
         if not self.cache_path.exists():
             issues.append(
@@ -285,11 +318,10 @@ class CacheReader:
                     )
                 )
 
-        pages_valid = 0
-        pages_failed = 0
         for row in manifest_rows[:limit]:
             if row.status != "success":
                 continue
+            emit_progress(current_page=row.page_id, current_artifact="page")
             page_issues_before = len([issue for issue in issues if issue.level == "error"])
             paths = self.page_paths(row)
             for path, code in (
@@ -310,6 +342,15 @@ class CacheReader:
                             row.page_id,
                         )
                     )
+                elif code == "metadata_missing":
+                    metadata_checked += 1
+                elif code == "markdown_missing":
+                    markdown_checked += 1
+                elif code == "links_missing":
+                    links_checked += 1
+                elif code == "conversion_missing":
+                    conversion_checked += 1
+                emit_progress(current_page=row.page_id, current_artifact=path.name)
             if paths.metadata.exists():
                 try:
                     metadata = PageMetadata.model_validate(load_json(paths.metadata))
@@ -381,6 +422,8 @@ class CacheReader:
                 pages_valid += 1
             else:
                 pages_failed += 1
+            pages_checked += 1
+            emit_progress(current_page=row.page_id, current_artifact="done")
 
         dataset_name = dataset.dataset_name if dataset else None
         return ValidationResult(
