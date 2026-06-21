@@ -230,6 +230,8 @@ class VisualExtractionConfig(BaseModel):
     model: str = "gpt-5.4-mini"
     prompt_version: str = "visual-ocr-v1"
     max_images_per_page: int = 20
+    skip_low_value_images: bool = True
+    min_image_pixels: int = 4096
 
 
 class RedactionConfig(BaseModel):

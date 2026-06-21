@@ -791,6 +791,52 @@ def test_extract_visuals_writes_omitted_image_inventory(
     assert omitted[0]["selection_score"] >= 0
 
 
+def test_extract_visuals_skips_obvious_low_value_images(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    logo_path = tiny_cache / "pages" / "123" / "attachments" / "product-logo.png"
+    logo_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8") + "\n![Logo](attachments/product-logo.png)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("low-value images should not be sent to the provider")
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["llm_calls"] == 0
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert artifact["status"] == "skipped"
+    assert artifact["images"][0]["status"] == "skipped"
+    assert artifact["images"][0]["error_type"] == "low_value_visual"
+
+
 def test_oversized_table_rows_get_usability_review_flags(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     long_cell = "step " * 260

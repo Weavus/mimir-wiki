@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -441,13 +442,25 @@ async def extract_visual_source(
                 prompt_version=config.visual_extraction.prompt_version,
             )
         )
-    payload = build_visual_payload(
-        endpoint,
-        image_bytes=image_bytes,
-        mime_type=mime_type,
-        title_hint=Path(unquote(urlparse(source.source).path)).name,
-    )
     source_hash = hashlib.sha256(image_bytes).hexdigest()
+    low_value_reason = low_value_image_reason(source, image_bytes, config=config)
+    if low_value_reason is not None:
+        return VisualSourceResult(
+            VisualExtractionImage(
+                image_id=image_id,
+                source=source.source,
+                source_kind=source.source_kind,
+                mime_type=mime_type,
+                content_sha256=source_hash,
+                status="skipped",
+                caption=f"Skipped before OCR: {low_value_reason}.",
+                error_type="low_value_visual",
+                error=low_value_reason,
+                provider=endpoint.provider,
+                model=endpoint.model,
+                prompt_version=config.visual_extraction.prompt_version,
+            )
+        )
     cached_image = image_cache.get(source_hash) if image_cache is not None else None
     if cached_image is not None:
         return VisualSourceResult(
@@ -462,6 +475,12 @@ async def extract_visual_source(
                 }
             )
         )
+    payload = build_visual_payload(
+        endpoint,
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+        title_hint=Path(unquote(urlparse(source.source).path)).name,
+    )
     started = time.monotonic()
     try:
         response, attempts, retries = await llm_client.complete(
@@ -602,6 +621,72 @@ def visual_source_content_sha256(source: VisualSource) -> str | None:
     except (OSError, ValueError):
         return None
     return hashlib.sha256(image_bytes).hexdigest()
+
+
+def low_value_image_reason(
+    source: VisualSource, image_bytes: bytes, *, config: AppConfig
+) -> str | None:
+    if not config.visual_extraction.skip_low_value_images:
+        return None
+    name = Path(unquote(urlparse(source.source).path)).name.lower()
+    if re.search(r"(^|[-_.])(logo|avatar|icon|badge|spacer|blank|placeholder)([-_.]|$)", name):
+        return "filename suggests logo/icon/placeholder content"
+    dimensions = image_dimensions(image_bytes)
+    if dimensions is None:
+        return None
+    width, height = dimensions
+    if width * height <= config.visual_extraction.min_image_pixels:
+        return f"tiny image dimensions {width}x{height}"
+    return None
+
+
+def image_dimensions(image_bytes: bytes) -> tuple[int, int] | None:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n") and len(image_bytes) >= 24:
+        width, height = struct.unpack(">II", image_bytes[16:24])
+        return int(width), int(height)
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")) and len(image_bytes) >= 10:
+        width, height = struct.unpack("<HH", image_bytes[6:10])
+        return int(width), int(height)
+    if image_bytes.startswith(b"\xff\xd8"):
+        return jpeg_dimensions(image_bytes)
+    return None
+
+
+def jpeg_dimensions(image_bytes: bytes) -> tuple[int, int] | None:
+    index = 2
+    while index + 9 < len(image_bytes):
+        if image_bytes[index] != 0xFF:
+            index += 1
+            continue
+        marker = image_bytes[index + 1]
+        index += 2
+        if marker in {0xD8, 0xD9}:
+            continue
+        if index + 2 > len(image_bytes):
+            return None
+        length = int.from_bytes(image_bytes[index : index + 2], "big")
+        if length < 2 or index + length > len(image_bytes):
+            return None
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            height = int.from_bytes(image_bytes[index + 3 : index + 5], "big")
+            width = int.from_bytes(image_bytes[index + 5 : index + 7], "big")
+            return int(width), int(height)
+        index += length
+    return None
 
 
 def build_visual_payload(
