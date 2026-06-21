@@ -105,20 +105,20 @@ llm:
   temperature: 0
   # Hard cap for in-flight LLM calls across enrichment and visual OCR. Keep the
   # quota fields below unset unless you know the provider's contracted limits.
-  max_concurrency: 4
+  max_concurrency: 8
   requests_per_minute:
   tokens_per_minute:
   # Adaptive concurrency starts at adaptive_initial_concurrency, reduces only the
   # affected provider/model on 429s, honors Retry-After through the retry path,
   # and gradually increases again after successful calls.
   adaptive_concurrency: true
-  adaptive_initial_concurrency: 4
+  adaptive_initial_concurrency: 5
   adaptive_min_concurrency: 1
   adaptive_increase_after_successes: 20
   adaptive_decrease_factor_on_429: 0.5
   adaptive_cooldown_seconds_on_429: 0
   adaptive_max_cooldown_seconds: 120
-  max_retries: 3
+  max_retries: 5
   initial_backoff_seconds: 1
   max_backoff_seconds: 60
   backoff_jitter: true
