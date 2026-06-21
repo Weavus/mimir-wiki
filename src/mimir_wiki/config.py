@@ -232,6 +232,8 @@ class VisualExtractionConfig(BaseModel):
     max_images_per_page: int = 20
     skip_low_value_images: bool = True
     min_image_pixels: int = 4096
+    adaptive_page_caps: bool = True
+    report_page_max_images: int = 12
 
 
 class RedactionConfig(BaseModel):

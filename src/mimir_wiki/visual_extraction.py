@@ -149,6 +149,22 @@ def rank_visual_sources(bundle: PageBundle, sources: list[VisualSource]) -> list
     return sorted(scored, key=lambda source: (-source.selection_score, source.source_order))
 
 
+def effective_visual_page_cap(bundle: PageBundle, config: AppConfig) -> int:
+    configured_cap = config.visual_extraction.max_images_per_page
+    if configured_cap < 0 or not config.visual_extraction.adaptive_page_caps:
+        return configured_cap
+    if is_report_like_page(bundle):
+        return min(configured_cap, config.visual_extraction.report_page_max_images)
+    return configured_cap
+
+
+def is_report_like_page(bundle: PageBundle) -> bool:
+    text = " ".join(
+        [bundle.metadata.title, *bundle.metadata.labels, *bundle.ancestor_titles]
+    ).lower()
+    return bool(re.search(r"\breport\b|weekly status|daily status|monthly status", text))
+
+
 def score_visual_source(bundle: PageBundle, source: VisualSource) -> VisualSource:
     text = " ".join(
         part for part in [source.source, source.nearby_heading or "", source.context] if part

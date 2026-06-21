@@ -44,6 +44,7 @@ from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, 
 from mimir_wiki.visual_extraction import (
     VisualSource,
     discover_visual_sources,
+    effective_visual_page_cap,
     load_visual_extraction,
     rank_visual_sources,
     run_extract_visuals_for_page,
@@ -921,6 +922,7 @@ def extract_visuals_command(
     images_skipped = 0
     images_omitted_by_page_cap = 0
     pages_capped = 0
+    pages_adaptive_capped = 0
     omitted_image_records: list[dict[str, Any]] = []
 
     def emit_progress(
@@ -958,7 +960,8 @@ def extract_visuals_command(
         all_sources = discover_visual_sources(bundle)
         ranked_sources = rank_visual_sources(bundle, all_sources)
         source_count = len(all_sources)
-        max_images = config.visual_extraction.max_images_per_page
+        configured_max_images = config.visual_extraction.max_images_per_page
+        max_images = effective_visual_page_cap(bundle, config)
         sources = ranked_sources[:max_images] if max_images >= 0 else ranked_sources
         selected_source_ids = {source.source for source in sources}
         omitted_sources = [
@@ -975,6 +978,8 @@ def extract_visuals_command(
         if omitted_by_cap:
             pages_capped += 1
             images_omitted_by_page_cap += omitted_by_cap
+            if max_images != configured_max_images:
+                pages_adaptive_capped += 1
             omitted_image_records.extend(
                 _visual_omitted_records(
                     bundle=bundle,
@@ -1103,6 +1108,7 @@ def extract_visuals_command(
             "pages_processed": processed,
             "pages_skipped_unchanged": skipped,
             "visual_pages_capped": pages_capped,
+            "visual_pages_adaptive_capped": pages_adaptive_capped,
             "pages_failed": len(context.failures),
             "visual_images_discovered": images_discovered,
             "visual_images_considered": images_considered,

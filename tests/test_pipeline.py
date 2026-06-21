@@ -791,6 +791,45 @@ def test_extract_visuals_writes_omitted_image_inventory(
     assert omitted[0]["selection_score"] >= 0
 
 
+def test_extract_visuals_applies_report_page_cap(tiny_cache: Path, tmp_path: Path) -> None:
+    manifest_path = tiny_cache / "manifest.jsonl"
+    manifest = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+    manifest[0]["title"] = "Weekly Operations Report"
+    manifest_path.write_text("\n".join(json.dumps(row) for row in manifest) + "\n", encoding="utf-8")
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "Weekly Operations Report"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    for index in range(3):
+        (tiny_cache / "pages" / "123" / "attachments" / f"chart-{index}.png").write_bytes(
+            generate_probe_png()
+        )
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n".join(f"![Chart {index}](attachments/chart-{index}.png)" for index in range(3)),
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+            "visual_extraction": {"max_images_per_page": 20, "report_page_max_images": 2},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=True,
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["visual_images_discovered"] == 3
+    assert result.summary.counts["visual_images_considered"] == 2
+    assert result.summary.counts["visual_pages_adaptive_capped"] == 1
+
+
 def test_extract_visuals_skips_obvious_low_value_images(
     tiny_cache: Path, tmp_path: Path, monkeypatch
 ) -> None:
