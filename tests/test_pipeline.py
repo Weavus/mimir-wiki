@@ -797,7 +797,9 @@ def test_extract_visuals_applies_report_page_cap(tiny_cache: Path, tmp_path: Pat
     manifest_path = tiny_cache / "manifest.jsonl"
     manifest = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
     manifest[0]["title"] = "Weekly Operations Report"
-    manifest_path.write_text("\n".join(json.dumps(row) for row in manifest) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        "\n".join(json.dumps(row) for row in manifest) + "\n", encoding="utf-8"
+    )
     metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["title"] = "Weekly Operations Report"

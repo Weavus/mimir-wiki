@@ -49,8 +49,8 @@ from mimir_wiki.visual_extraction import (
     rank_visual_sources,
     run_extract_visuals_for_page,
     select_visual_sources,
-    visual_source_content_sha256,
     visual_extraction_path,
+    visual_source_content_sha256,
 )
 from mimir_wiki.writers.artifacts import (
     aggregate_candidate_entity_rows,

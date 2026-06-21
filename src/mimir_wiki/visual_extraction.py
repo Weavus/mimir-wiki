@@ -224,8 +224,12 @@ def score_visual_source(bundle: PageBundle, source: VisualSource) -> VisualSourc
     high_value_patterns = {
         "architecture_context": r"architecture|diagram|topology|network|schema|flow|sequence",
         "operational_context": r"runbook|procedure|recovery|diagnostic|validation|backout",
-        "incident_context": r"incident|investigation|root cause|rca|error|exception|failure|timeout",
-        "monitoring_context": r"dashboard|chart|metric|alarm|alert|monitor|cloudwatch|splunk|grafana|kibana",
+        "incident_context": (
+            r"incident|investigation|root cause|rca|error|exception|failure|timeout"
+        ),
+        "monitoring_context": (
+            r"dashboard|chart|metric|alarm|alert|monitor|cloudwatch|splunk|grafana|kibana"
+        ),
         "code_or_log_context": r"terminal|command|powershell|shell|log|stack trace|json|xml|sql",
     }
     for reason, pattern in high_value_patterns.items():
