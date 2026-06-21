@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from mimir_wiki.config import apply_runtime_overrides, load_config
 from mimir_wiki.llm.base import ChatCompletionProvider, ResponsesProvider, provider_for_config
 
@@ -65,6 +67,59 @@ def test_example_config_loads() -> None:
     assert config.llm.provider == "none"
     assert config.features.llm.enabled is False
     assert config.paths.knowledge == "./knowledge"
+
+
+def test_apply_runtime_overrides_rejects_unknown_llm_task() -> None:
+    with pytest.raises(ValueError, match="Unknown LLM task"):
+        apply_runtime_overrides(provider="azure-ai-foundry", llm_tasks=["summary", "bogus"])
+
+
+def test_load_config_rejects_unknown_feature_llm_task(tmp_path: Path) -> None:
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        """
+features:
+  llm:
+    tasks:
+      summary: true
+      bogus: true
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"features\.llm\.tasks"):
+        load_config(config_path=config_file)
+
+
+def test_load_config_rejects_unknown_llm_task_model(tmp_path: Path) -> None:
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        """
+llm:
+  task_models:
+    bogus:
+      model: test-model
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"llm\.task_models"):
+        load_config(config_path=config_file)
+
+
+def test_load_config_rejects_unknown_llm_bundle_task(tmp_path: Path) -> None:
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        """
+llm:
+  task_bundles:
+    semantic:
+      tasks:
+        - summary
+        - bogus
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"llm\.task_bundles\.semantic\.tasks"):
+        load_config(config_path=config_file)
 
 
 def test_example_azure_profile_loads(tmp_path: Path, monkeypatch) -> None:

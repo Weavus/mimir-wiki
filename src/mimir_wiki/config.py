@@ -348,14 +348,28 @@ def _env_overrides(env: Mapping[str, str | None]) -> dict[str, Any]:
 
 def _normalize_llm_tasks(config: AppConfig, explicit_tasks: list[str] | None) -> AppConfig:
     if explicit_tasks:
-        unknown = sorted(set(explicit_tasks) - LLM_TASKS)
-        if unknown:
-            raise ValueError(f"Unknown LLM task(s): {', '.join(unknown)}")
+        validate_llm_task_names(explicit_tasks, context="--llm-task")
         tasks = {task: task in explicit_tasks for task in LLM_TASKS}
         data = config.model_dump(mode="python")
         data["features"]["llm"]["tasks"] = tasks
         return AppConfig.model_validate(data)
     return config
+
+
+def validate_llm_task_names(tasks: list[str] | set[str], *, context: str) -> None:
+    unknown = sorted(set(tasks) - LLM_TASKS)
+    if unknown:
+        allowed = ", ".join(sorted(LLM_TASKS))
+        raise ValueError(
+            f"Unknown LLM task(s) in {context}: {', '.join(unknown)}. Allowed tasks: {allowed}."
+        )
+
+
+def validate_llm_task_config(config: AppConfig) -> None:
+    validate_llm_task_names(set(config.features.llm.tasks), context="features.llm.tasks")
+    validate_llm_task_names(set(config.llm.task_models), context="llm.task_models")
+    for bundle_name, bundle in sorted(config.llm.task_bundles.items()):
+        validate_llm_task_names(bundle.tasks, context=f"llm.task_bundles.{bundle_name}.tasks")
 
 
 def load_config(
@@ -395,6 +409,7 @@ def load_config(
         config_data = config.model_dump(mode="python")
         config_data["features"]["llm"]["enabled"] = False
         config = AppConfig.model_validate(config_data)
+    validate_llm_task_config(config)
     return config
 
 
@@ -442,6 +457,7 @@ def apply_runtime_overrides(
     if reports_out is not None:
         overrides = deep_merge(overrides, {"paths": {"reports": str(reports_out)}})
     if llm_tasks:
+        validate_llm_task_names(llm_tasks, context="--llm-task")
         overrides = deep_merge(
             overrides,
             {"features": {"llm": {"tasks": {task: task in llm_tasks for task in LLM_TASKS}}}},

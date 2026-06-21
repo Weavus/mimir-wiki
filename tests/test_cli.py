@@ -154,3 +154,35 @@ features:
     )
     assert result.exit_code == 1, result.output
     assert "missing_credentials" in result.output
+
+
+def test_cli_enrich_rejects_unknown_llm_task(tiny_cache: Path, tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        f"""
+paths:
+  runs: {tmp_path / "runs"}
+""",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "enrich",
+            "--config",
+            str(config_file),
+            "--cache",
+            str(tiny_cache),
+            "--provider",
+            "azure-ai-foundry",
+            "--llm-task",
+            "bogus",
+            "--json",
+            "--quiet",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    combined_output = result.output + result.stderr + str(result.exception or "")
+    assert "Unknown LLM task" in combined_output

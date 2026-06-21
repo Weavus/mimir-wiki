@@ -3822,7 +3822,7 @@ the longer-term design intent above.
   should be removed from MVP config until needed.
 - [ ] Add a CLI `--workers` override or document that page worker tuning is
   config-only.
-- [ ] Tighten `--llm-task` validation at CLI override boundaries so unknown tasks
+- [x] Tighten `--llm-task` validation at CLI override boundaries so unknown tasks
   fail early and consistently.
 - [ ] Add an optional Onyx file-connector smoke test or documented manual smoke
   checklist using `dist/onyx-enriched`.

@@ -76,7 +76,7 @@ llm:
       prompt_version: classification-v1
     summary:
       provider: azure-ai-foundry
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: summary-v1
     keywords:
       provider: azure-ai-foundry
@@ -84,28 +84,40 @@ llm:
       prompt_version: keywords-v1
     themes:
       provider: azure-ai-foundry
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: themes-v1
     concepts:
       provider: azure-ai-foundry
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: concepts-v1
     candidate_entities:
       provider: azure-ai-foundry
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: candidate-entities-v1
     operational_signals:
       provider: azure-ai-foundry
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: operational-signals-v1
     quality_warnings:
       provider: azure-ai-foundry
-      model: gpt-5.5
+      model: gpt-5.5-mini
       prompt_version: quality-warnings-v1
   temperature: 0
+  # Hard cap for in-flight LLM calls across enrichment and visual OCR. Keep the
+  # quota fields below unset unless you know the provider's contracted limits.
   max_concurrency: 4
   requests_per_minute:
   tokens_per_minute:
+  # Adaptive concurrency starts at adaptive_initial_concurrency, reduces only the
+  # affected provider/model on 429s, honors Retry-After through the retry path,
+  # and gradually increases again after successful calls.
+  adaptive_concurrency: true
+  adaptive_initial_concurrency: 4
+  adaptive_min_concurrency: 1
+  adaptive_increase_after_successes: 20
+  adaptive_decrease_factor_on_429: 0.5
+  adaptive_cooldown_seconds_on_429: 0
+  adaptive_max_cooldown_seconds: 120
   max_retries: 3
   initial_backoff_seconds: 1
   max_backoff_seconds: 60

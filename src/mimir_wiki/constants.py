@@ -30,7 +30,6 @@ LLM_TASKS = {
     "candidate_entities",
     "operational_signals",
     "quality_warnings",
-    "onyx_markdown_context",
 }
 
 EXIT_SUCCESS = 0

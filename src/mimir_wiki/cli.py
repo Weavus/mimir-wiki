@@ -12,7 +12,7 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from rich.table import Table
 
 from mimir_wiki.config import AppConfig, apply_runtime_overrides, load_config
-from mimir_wiki.constants import EXIT_RUNTIME_ERROR, EXIT_SUCCESS
+from mimir_wiki.constants import EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USER_ERROR
 from mimir_wiki.llm.probe import probe_multimodal_ocr
 from mimir_wiki.pipeline import (
     CommandResult,
@@ -62,12 +62,13 @@ def _print_result(
 def _handle_exception(
     console: Console, exc: Exception, *, verbose: bool, json_output: bool
 ) -> None:
+    exit_code = _exit_code_for_exception(exc)
     if json_output:
         typer.echo(
             json_dumps(
                 {
                     "status": "failed",
-                    "exit_code": EXIT_RUNTIME_ERROR,
+                    "exit_code": exit_code,
                     "error": str(exc),
                     "error_type": type(exc).__name__,
                 },
@@ -78,6 +79,12 @@ def _handle_exception(
         console.print(f"Error: {exc}", style="red")
         if verbose:
             console.print(traceback.format_exc())
+
+
+def _exit_code_for_exception(exc: Exception) -> int:
+    if isinstance(exc, ValueError):
+        return EXIT_USER_ERROR
+    return EXIT_RUNTIME_ERROR
 
 
 def _handle_keyboard_interrupt(
@@ -241,7 +248,7 @@ def validate_cache(
             {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
         )
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
-        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+        raise typer.Exit(_exit_code_for_exception(exc)) from exc
 
 
 @app.command("enrich")
@@ -399,7 +406,7 @@ def enrich(
             {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
         )
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
-        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+        raise typer.Exit(_exit_code_for_exception(exc)) from exc
 
 
 @app.command("extract-visuals")
@@ -538,7 +545,7 @@ def extract_visuals(
             {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
         )
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
-        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+        raise typer.Exit(_exit_code_for_exception(exc)) from exc
 
 
 @app.command("report")
@@ -613,7 +620,7 @@ def report(
             {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
         )
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
-        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+        raise typer.Exit(_exit_code_for_exception(exc)) from exc
 
 
 @app.command("probe-ocr")
@@ -680,7 +687,7 @@ def probe_ocr(
         raise
     except Exception as exc:
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
-        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+        raise typer.Exit(_exit_code_for_exception(exc)) from exc
 
 
 @app.command("export-schema")
@@ -717,7 +724,7 @@ def export_schema(
             {"event": "command_failed", "error_type": type(exc).__name__, "message": str(exc)},
         )
         _handle_exception(console, exc, verbose=verbose, json_output=json_output)
-        raise typer.Exit(EXIT_RUNTIME_ERROR) from exc
+        raise typer.Exit(_exit_code_for_exception(exc)) from exc
 
 
 def main() -> None:
