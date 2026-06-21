@@ -44,23 +44,67 @@ def _print_result(
         return
     if quiet:
         return
-    table = Table(title=f"mimir-wiki {result.summary.command}")
-    table.add_column("Field")
-    table.add_column("Value")
-    table.add_row("Status", result.summary.status)
-    table.add_row("Dataset", result.summary.dataset_name)
-    if result.summary.cache_path:
-        table.add_row("Cache", result.summary.cache_path)
-    for key, value in result.summary.counts.items():
-        table.add_row(key, str(value))
-    table.add_row("Run", result.summary.outputs.get("run", "dry-run"))
-    console.print(table)
+    console.print(_completion_panel(result))
     if result.output_paths:
-        console.print("Outputs:")
+        console.print("[bold cyan]Outputs[/bold cyan]")
         for path in result.output_paths[:20]:
-            console.print(f"- {path}")
+            console.print(f"[dim]-[/dim] {path}")
         if len(result.output_paths) > 20:
-            console.print(f"- ... {len(result.output_paths) - 20} more")
+            console.print(f"[dim]- ... {len(result.output_paths) - 20} more[/dim]")
+
+
+def _completion_panel(result: CommandResult) -> Panel:
+    summary = result.summary
+    counts = summary.counts
+    table = Table.grid(expand=True)
+    table.add_column("group", style="bold cyan", no_wrap=True, width=11)
+    table.add_column("value", ratio=1)
+    table.add_row(
+        "Status",
+        (
+            f"{_styled_status(summary.status)}   exit {summary.exit_code}   "
+            f"elapsed {_fmt_duration(summary.elapsed_seconds)}"
+        ),
+    )
+    table.add_row("Dataset", str(summary.dataset_name or "-"))
+    if summary.cache_path:
+        table.add_row("Cache", str(summary.cache_path))
+    if summary.command == "extract-visuals":
+        table.add_row(
+            "Images",
+            (
+                f"extracted {counts.get('visual_images_extracted', 0):,}   "
+                f"skipped {counts.get('visual_images_skipped', 0):,}   "
+                f"failed {_style_count(int(counts.get('visual_images_failed', 0)), warn=True)}"
+            ),
+        )
+    table.add_row(
+        "Pages",
+        (
+            f"processed {counts.get('pages_processed', 0):,}   "
+            f"skipped {counts.get('pages_skipped_unchanged', 0):,}   "
+            f"failed {_style_count(int(counts.get('pages_failed', 0)), warn=True)}"
+        ),
+    )
+    if "llm_calls" in counts:
+        table.add_row(
+            "LLM",
+            f"calls {counts.get('llm_calls', 0):,}   retries {counts.get('llm_retries', 0):,}",
+        )
+    table.add_row("Run", str(summary.outputs.get("run", "dry-run")))
+    return Panel(
+        table,
+        title=f"[bold cyan]{summary.command} complete[/bold cyan]",
+        border_style="green" if summary.exit_code == EXIT_SUCCESS else "yellow",
+    )
+
+
+def _styled_status(status: str) -> str:
+    if status == "success":
+        return "[bold green]success[/bold green]"
+    if status == "partial_success":
+        return "[bold yellow]partial_success[/bold yellow]"
+    return f"[bold red]{status}[/bold red]"
 
 
 def _handle_exception(
@@ -486,6 +530,24 @@ class ArtifactDashboard:
         ]
 
 
+class LiveDashboardUpdater:
+    def __init__(self, dashboard: RunDashboard | ArtifactDashboard, live: Live) -> None:
+        self.dashboard = dashboard
+        self.live = live
+        self.last_rendered_at = 0.0
+        self.min_interval_seconds = 0.25
+
+    def update(self, snapshot: dict[str, object], *, force: bool = False) -> None:
+        self.dashboard.update(snapshot)
+        now = time.monotonic()
+        if force or now - self.last_rendered_at >= self.min_interval_seconds:
+            self.live.update(self.dashboard.render(), refresh=True)
+            self.last_rendered_at = now
+
+    def finish(self) -> None:
+        self.live.update(self.dashboard.render(), refresh=True)
+
+
 def _load_runtime_config(
     *,
     config_path: Path | None,
@@ -570,11 +632,13 @@ def validate_cache(
             dashboard = ArtifactDashboard(
                 command="validate-cache", dataset=cache.name, console=console
             )
-            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
+            with Live(
+                dashboard.render(), console=console, refresh_per_second=4, transient=True
+            ) as live:
+                updater = LiveDashboardUpdater(dashboard, live)
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    dashboard.update(snapshot)
-                    live.update(dashboard.render())
+                    updater.update(snapshot)
 
                 result = validate_cache_command(
                     config=config,
@@ -585,6 +649,7 @@ def validate_cache(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
+                updater.finish()
         else:
             result = validate_cache_command(
                 config=config,
@@ -691,11 +756,13 @@ def enrich(
                 primary_unit="pages",
                 console=console,
             )
-            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
+            with Live(
+                dashboard.render(), console=console, refresh_per_second=4, transient=True
+            ) as live:
+                updater = LiveDashboardUpdater(dashboard, live)
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    dashboard.update(snapshot)
-                    live.update(dashboard.render())
+                    updater.update(snapshot)
 
                 result = enrich_command(
                     config=config,
@@ -710,6 +777,7 @@ def enrich(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
+                updater.finish()
         else:
             result = enrich_command(
                 config=config,
@@ -793,11 +861,13 @@ def extract_visuals(
                 primary_unit="images",
                 console=console,
             )
-            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
+            with Live(
+                dashboard.render(), console=console, refresh_per_second=4, transient=True
+            ) as live:
+                updater = LiveDashboardUpdater(dashboard, live)
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    dashboard.update(snapshot)
-                    live.update(dashboard.render())
+                    updater.update(snapshot)
 
                 result = extract_visuals_command(
                     config=config,
@@ -810,6 +880,7 @@ def extract_visuals(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
+                updater.finish()
         else:
             result = extract_visuals_command(
                 config=config,
@@ -871,11 +942,13 @@ def report(
         )
         if _show_progress(config, json_output=json_output, quiet=quiet):
             dashboard = ArtifactDashboard(command="report", dataset=cache.name, console=console)
-            with Live(dashboard.render(), console=console, refresh_per_second=4) as live:
+            with Live(
+                dashboard.render(), console=console, refresh_per_second=4, transient=True
+            ) as live:
+                updater = LiveDashboardUpdater(dashboard, live)
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
-                    dashboard.update(snapshot)
-                    live.update(dashboard.render())
+                    updater.update(snapshot)
 
                 result = report_command(
                     config=config,
@@ -886,6 +959,7 @@ def report(
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
+                updater.finish()
         else:
             result = report_command(
                 config=config,
