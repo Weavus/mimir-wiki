@@ -365,6 +365,68 @@ def test_extract_visuals_writes_artifact_and_enrichment_marks_extracted(
     assert "MIMIR 42" in content
 
 
+def test_extract_visuals_reuses_duplicate_image_hashes(
+    tiny_cache: Path, tmp_path: Path, monkeypatch
+) -> None:
+    first_path = tiny_cache / "pages" / "123" / "attachments" / "first.png"
+    second_path = tiny_cache / "pages" / "123" / "attachments" / "second.png"
+    first_path.write_bytes(generate_probe_png())
+    second_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + "\n![First](attachments/first.png)\n![Second](attachments/second.png)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_FOUNDRY_ENDPOINT", "https://example.services.ai.azure.com/openai/v1")
+    monkeypatch.setenv("TEST_FOUNDRY_KEY", "test-key")
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5.4-mini",
+                "output_text": json.dumps(
+                    {"ocr_text": "MIMIR 42", "caption": "Duplicate probe", "confidence": 0.99}
+                ),
+            },
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {
+                "provider": "none",
+                "azure_ai_foundry": {
+                    "endpoint_env": "TEST_FOUNDRY_ENDPOINT",
+                    "api_key_env": "TEST_FOUNDRY_KEY",
+                    "deployment_env": "",
+                },
+            },
+            "visual_extraction": {"provider": "azure-ai-foundry", "model": "gpt-5.4-mini"},
+        }
+    )
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        llm_transport=httpx.MockTransport(handler),
+    )
+
+    assert result.exit_code == 0
+    assert calls == 1
+    assert result.summary.counts["llm_calls"] == 1
+    artifact = json.loads((tiny_cache / "pages" / "123" / "visual_extraction.json").read_text())
+    assert artifact["images_succeeded"] == 2
+    assert artifact["images"][0]["cache_hit"] is False
+    assert artifact["images"][1]["cache_hit"] is True
+
+
 def test_extract_visuals_retries_with_shared_llm_client(
     tiny_cache: Path, tmp_path: Path, monkeypatch
 ) -> None:

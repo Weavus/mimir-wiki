@@ -322,6 +322,7 @@ class VisualExtractionImage(FlexibleModel):
     provider: str | None = None
     model: str | None = None
     prompt_version: str | None = None
+    cache_hit: bool = False
     error_type: str | None = None
     error: str | None = None
 

@@ -30,6 +30,7 @@ from mimir_wiki.schemas import (
     PageFailure,
     QualityScoreRow,
     RunSummary,
+    VisualExtractionImage,
     VisualIndexRow,
     WarningRecord,
 )
@@ -899,6 +900,7 @@ def extract_visuals_command(
         return CommandResult(summary=summary)
 
     pages = reader.iter_pages(limit=limit, space_filter=space_filter)
+    image_cache = _build_visual_image_cache(pages)
     scanned = 0
     considered = 0
     processed = 0
@@ -1010,6 +1012,7 @@ def extract_visuals_command(
                 dry_run=False,
                 llm_transport=llm_transport,
                 progress_callback=image_progress_callback,
+                image_cache=image_cache,
             )
         except Exception as exc:
             context.page_failure(
@@ -1074,6 +1077,19 @@ def extract_visuals_command(
         warnings=context.warnings,
         output_paths=output_paths,
     )
+
+
+def _build_visual_image_cache(pages: list[PageBundle]) -> dict[str, VisualExtractionImage]:
+    cache: dict[str, VisualExtractionImage] = {}
+    for bundle in pages:
+        artifact = load_visual_extraction(bundle)
+        if artifact is None:
+            continue
+        for image in artifact.images:
+            if image.status != "success" or not image.content_sha256:
+                continue
+            cache.setdefault(image.content_sha256, image)
+    return cache
 
 
 def _read_document_rows(path: Path) -> list[DocumentIndexRow]:

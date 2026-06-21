@@ -163,6 +163,7 @@ async def extract_visuals_for_page(
     dry_run: bool = False,
     llm_transport: httpx.AsyncBaseTransport | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    image_cache: dict[str, VisualExtractionImage] | None = None,
 ) -> tuple[VisualExtractionArtifact, int, list[LLMUsage], int]:
     endpoint = build_visual_probe_endpoint(config)
     sources = discover_visual_sources(
@@ -218,6 +219,7 @@ async def extract_visuals_for_page(
                 run_id=run_id,
                 dataset_name=dataset_name,
                 generated_at=generated_at,
+                image_cache=image_cache,
             )
             image = result.image
             images.append(image)
@@ -276,6 +278,7 @@ async def extract_visual_source(
     run_id: str,
     dataset_name: str,
     generated_at: str,
+    image_cache: dict[str, VisualExtractionImage] | None = None,
 ) -> VisualSourceResult:
     image_id = visual_image_id(index, source)
     if source.source_kind == "url":
@@ -320,6 +323,20 @@ async def extract_visual_source(
         title_hint=Path(unquote(urlparse(source.source).path)).name,
     )
     source_hash = hashlib.sha256(image_bytes).hexdigest()
+    cached_image = image_cache.get(source_hash) if image_cache is not None else None
+    if cached_image is not None:
+        return VisualSourceResult(
+            image=cached_image.model_copy(
+                update={
+                    "image_id": image_id,
+                    "source": source.source,
+                    "source_kind": source.source_kind,
+                    "mime_type": mime_type,
+                    "content_sha256": source_hash,
+                    "cache_hit": True,
+                }
+            )
+        )
     started = time.monotonic()
     try:
         response, attempts, retries = await llm_client.complete(
@@ -372,21 +389,24 @@ async def extract_visual_source(
             ),
             retries=retries,
         )
+    image = VisualExtractionImage(
+        image_id=image_id,
+        source=source.source,
+        source_kind=source.source_kind,
+        mime_type=mime_type,
+        content_sha256=source_hash,
+        status="success",
+        ocr_text=ocr_text,
+        caption=caption,
+        confidence=confidence if isinstance(confidence, int | float) else None,
+        provider=endpoint.provider,
+        model=response.model,
+        prompt_version=config.visual_extraction.prompt_version,
+    )
+    if image_cache is not None:
+        image_cache[source_hash] = image
     return VisualSourceResult(
-        image=VisualExtractionImage(
-            image_id=image_id,
-            source=source.source,
-            source_kind=source.source_kind,
-            mime_type=mime_type,
-            content_sha256=source_hash,
-            status="success",
-            ocr_text=ocr_text,
-            caption=caption,
-            confidence=confidence if isinstance(confidence, int | float) else None,
-            provider=endpoint.provider,
-            model=response.model,
-            prompt_version=config.visual_extraction.prompt_version,
-        ),
+        image=image,
         usage=LLMUsage(
             run_id=run_id,
             dataset_name=dataset_name,
