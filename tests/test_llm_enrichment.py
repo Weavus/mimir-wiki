@@ -7,11 +7,14 @@ from mimir_wiki.cache_reader import CacheReader
 from mimir_wiki.config import load_config
 from mimir_wiki.enrichers.deterministic import enrich_page
 from mimir_wiki.enrichers.llm import (
+    LLMWorkItem,
     apply_llm_enrichment,
     enabled_llm_work_items,
     load_prompt_template,
     normalize_document_type,
+    parse_json_response_with_warnings,
     validate_task_payload,
+    validate_work_item_payload_with_warnings,
 )
 from mimir_wiki.llm.base import LLMRequest, LLMResponse
 
@@ -320,3 +323,29 @@ def test_bundle_response_accepts_large_but_valid_evidence() -> None:
         },
     )
     assert payload["key_facts"][0]["evidence"] == "x" * 6000
+
+
+def test_llm_json_response_repairs_trailing_commas() -> None:
+    payload, warnings = parse_json_response_with_warnings(
+        '```json\n{"short_summary":"ok","detailed_summary":"details",}\n```'
+    )
+    assert payload["short_summary"] == "ok"
+    assert warnings == ["repaired_json"]
+
+
+def test_llm_payload_trims_oversized_fields_before_validation() -> None:
+    work_item = LLMWorkItem(
+        name="summary",
+        prompt_task="summary",
+        tasks=["summary"],
+        provider="mock",
+        model="mock",
+        prompt_version="summary-v1",
+    )
+    payload, warnings = validate_work_item_payload_with_warnings(
+        work_item,
+        {"short_summary": "s" * 1200, "detailed_summary": "d" * 7000},
+    )
+    assert len(payload["short_summary"]) == 1000
+    assert len(payload["detailed_summary"]) == 6000
+    assert warnings == ["trimmed_fields"]

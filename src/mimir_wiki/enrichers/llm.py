@@ -143,7 +143,7 @@ class LLMCandidateEntity(LLMTaskModel):
     entity_type: str = Field(min_length=1, max_length=80)
     aliases: list[str] = Field(default_factory=list, max_length=20)
     confidence: float = Field(ge=0, le=1, default=0.65)
-    evidence: str = Field(min_length=1, max_length=4000)
+    evidence: str = Field(min_length=1, max_length=8000)
 
 
 class CandidateEntitiesResponse(LLMTaskModel):
@@ -197,6 +197,25 @@ TASK_RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "candidate_entities": CandidateEntitiesResponse,
     "operational_signals": OperationalSignalsResponse,
     "quality_warnings": QualityWarningsResponse,
+}
+
+FIELD_STRING_LIMITS = {
+    "short_summary": 1000,
+    "detailed_summary": 6000,
+    "name": 120,
+    "entity_type": 80,
+    "evidence": 8000,
+    "label": 80,
+    "value": 300,
+}
+FIELD_LIST_LIMITS = {
+    "keywords": 50,
+    "themes": 50,
+    "concepts": 80,
+    "candidate_entities": 100,
+    "warnings": 100,
+    "key_facts": 200,
+    "aliases": 20,
 }
 
 
@@ -458,7 +477,21 @@ async def _apply_llm_enrichment_async(
                     generated_at=generated_at,
                 )
                 result.usage.append(usage)
-                payload = validate_work_item_payload(work_item, parse_json_response(response.text))
+                parsed, parse_warnings = parse_json_response_with_warnings(response.text)
+                payload, validation_warnings = validate_work_item_payload_with_warnings(
+                    work_item, parsed
+                )
+                for warning_type in parse_warnings + validation_warnings:
+                    result.warnings.append(
+                        _warning(
+                            run_id,
+                            dataset_name,
+                            generated_at,
+                            bundle,
+                            f"llm_response_{warning_type}:{work_item.name}",
+                            f"LLM response {warning_type} for {work_item.name}.",
+                        )
+                    )
                 task_payloads.append(payload)
                 if progress_callback:
                     progress_callback(
@@ -705,32 +738,105 @@ async def complete_with_cache(
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
+    parsed, _ = parse_json_response_with_warnings(text)
+    return parsed
+
+
+def parse_json_response_with_warnings(text: str) -> tuple[dict[str, Any], list[str]]:
     stripped = text.strip()
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, flags=re.DOTALL)
     if fence:
         stripped = fence.group(1).strip()
-    parsed = json.loads(stripped)
+    try:
+        parsed = json.loads(stripped)
+        warnings: list[str] = []
+    except json.JSONDecodeError:
+        repaired = repair_json_text(stripped)
+        if repaired == stripped:
+            raise
+        parsed = json.loads(repaired)
+        warnings = ["repaired_json"]
     if not isinstance(parsed, dict):
         raise ValueError("LLM response must be a JSON object")
-    return parsed
+    return parsed, warnings
+
+
+def repair_json_text(text: str) -> str:
+    repaired = text.strip()
+    start = repaired.find("{")
+    end = repaired.rfind("}")
+    if start >= 0 and end > start:
+        repaired = repaired[start : end + 1]
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    return repaired
+
+
+def trim_payload_for_validation(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    changed = False
+
+    def trim_value(key: str, value: Any) -> Any:
+        nonlocal changed
+        if isinstance(value, str) and key in FIELD_STRING_LIMITS:
+            limit = FIELD_STRING_LIMITS[key]
+            if len(value) > limit:
+                changed = True
+                return value[:limit]
+        if isinstance(value, list):
+            limit = FIELD_LIST_LIMITS.get(key)
+            items = value
+            if limit is not None and len(items) > limit:
+                changed = True
+                items = items[:limit]
+            return [trim_value("", item) for item in items]
+        if isinstance(value, dict):
+            return {
+                nested_key: trim_value(nested_key, nested_value)
+                for nested_key, nested_value in value.items()
+            }
+        return value
+
+    trimmed = {key: trim_value(key, value) for key, value in payload.items()}
+    return trimmed, changed
 
 
 def validate_task_payload(task: str, payload: dict[str, Any]) -> dict[str, Any]:
+    validated, _ = validate_task_payload_with_warnings(task, payload)
+    return validated
+
+
+def validate_task_payload_with_warnings(
+    task: str, payload: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    payload, trimmed = trim_payload_for_validation(payload)
     model = TASK_RESPONSE_MODELS.get(task)
     if model is None:
-        return payload
-    return model.model_validate(payload).model_dump(mode="python", exclude_none=True)
+        return payload, ["trimmed_fields"] if trimmed else []
+    return (
+        model.model_validate(payload).model_dump(mode="python", exclude_none=True),
+        ["trimmed_fields"] if trimmed else [],
+    )
 
 
 def validate_work_item_payload(work_item: LLMWorkItem, payload: dict[str, Any]) -> dict[str, Any]:
+    validated, _ = validate_work_item_payload_with_warnings(work_item, payload)
+    return validated
+
+
+def validate_work_item_payload_with_warnings(
+    work_item: LLMWorkItem, payload: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    payload, trimmed = trim_payload_for_validation(payload)
+    warnings = ["trimmed_fields"] if trimmed else []
     if len(work_item.tasks) == 1:
-        return validate_task_payload(work_item.tasks[0], payload)
+        validated, task_warnings = validate_task_payload_with_warnings(work_item.tasks[0], payload)
+        return validated, sorted(set(warnings + task_warnings))
     validated = BundleResponse.model_validate(payload).model_dump(mode="python", exclude_none=True)
     for task in work_item.tasks:
         task_payload = {key: validated[key] for key in _task_payload_keys(task) if key in validated}
         if task_payload:
-            validate_task_payload(task, task_payload)
-    return validated
+            _, task_warnings = validate_task_payload_with_warnings(task, task_payload)
+            warnings.extend(task_warnings)
+    return validated, sorted(set(warnings))
 
 
 def _task_payload_keys(task: str) -> tuple[str, ...]:
