@@ -55,3 +55,14 @@ def test_validate_cache_allows_missing_optional_metadata_fields(tiny_cache: Path
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     result = CacheReader(tiny_cache).validate()
     assert result.ok
+
+
+def test_reader_ignores_cache_artifacts_as_attachments(tiny_cache: Path) -> None:
+    attachments = tiny_cache / "pages" / "123" / "attachments"
+    (attachments / "manifest.jsonl").write_text("{}\n", encoding="utf-8")
+    (attachments / "diagram.png").write_bytes(b"fake")
+
+    bundle = CacheReader(tiny_cache).iter_pages()[0]
+
+    assert bundle.attachment_names == ["diagram.png"]
+    assert bundle.attachment_reference_names == ["diagram.png"]

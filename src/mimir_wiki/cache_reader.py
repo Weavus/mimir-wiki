@@ -18,6 +18,15 @@ from mimir_wiki.schemas import (
 )
 from mimir_wiki.utils import load_json, load_jsonl, read_text, source_hash_from_metadata
 
+CACHE_ARTIFACT_ATTACHMENT_NAMES = {
+    "conversion.json",
+    "enrichment.json",
+    "links.json",
+    "manifest.jsonl",
+    "metadata.json",
+    "visual_extraction.json",
+}
+
 
 @dataclass(frozen=True)
 class PagePaths:
@@ -52,7 +61,11 @@ class PageBundle:
     def attachment_names(self) -> list[str]:
         if not self.paths.attachments.exists():
             return []
-        return sorted(item.name for item in self.paths.attachments.iterdir() if item.is_file())
+        return sorted(
+            item.name
+            for item in self.paths.attachments.iterdir()
+            if item.is_file() and not is_cache_artifact_attachment(item.name)
+        )
 
     @property
     def attachment_link_names(self) -> list[str]:
@@ -62,7 +75,7 @@ class PageBundle:
             if link.type != "confluence_attachment" and "/download/attachments/" not in href:
                 continue
             name = (link.text or href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]).strip()
-            if name:
+            if name and not is_cache_artifact_attachment(name):
                 names.append(name)
         return sorted(set(names))
 
@@ -82,6 +95,11 @@ class PageBundle:
     @property
     def ancestor_titles(self) -> list[str]:
         return [ancestor.title for ancestor in self.metadata.ancestors]
+
+
+def is_cache_artifact_attachment(name: str) -> bool:
+    lowered = Path(name).name.lower()
+    return lowered in CACHE_ARTIFACT_ATTACHMENT_NAMES or lowered.startswith("manifest.")
 
 
 @dataclass(frozen=True)
