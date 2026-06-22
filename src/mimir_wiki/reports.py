@@ -12,6 +12,7 @@ from mimir_wiki.schemas import (
     LLMUsage,
     PageFailure,
     QualityScoreRow,
+    RunSummary,
     VisualExtractionArtifact,
 )
 from mimir_wiki.utils import atomic_write_text, hamming_distance_hex, normalize_term
@@ -70,6 +71,8 @@ def write_enrichment_summary(
     dataset_name: str,
     document_rows: list[DocumentIndexRow],
     quality_rows: list[QualityScoreRow],
+    source_run_summaries: list[RunSummary] | None = None,
+    page_failures: list[PageFailure] | None = None,
 ) -> Path:
     average_quality = 0
     if quality_rows:
@@ -79,6 +82,26 @@ def write_enrichment_summary(
         for row in document_rows
         if any(flag in row.status_flags for flag in ("stale", "deprecated", "archived"))
     )
+    source_run_summaries = source_run_summaries or []
+    page_failures = page_failures or []
+    source_run_lines = (
+        "\n".join(
+            f"- `{summary.run_id}`: {summary.command} {summary.status} "
+            f"(exit {summary.exit_code}, processed "
+            f"{summary.counts.get('pages_processed', 0)}, failed "
+            f"{summary.counts.get('pages_failed', 0)})"
+            for summary in source_run_summaries
+        )
+        or "- No matching enrich or extract-visuals runs found for this dataset."
+    )
+    failure_summary = "No page failures recorded for the selected source runs."
+    if page_failures:
+        grouped = Counter((failure.stage, failure.error_type) for failure in page_failures)
+        rows = [
+            [stage, error_type, str(count)]
+            for (stage, error_type), count in grouped.most_common(20)
+        ]
+        failure_summary = markdown_table(["Stage", "Error type", "Count"], rows)
     content = f"""# Enrichment Summary
 
 Dataset: {dataset_name}
@@ -89,6 +112,14 @@ Dataset: {dataset_name}
 - Average quality score: {average_quality}
 - Good or better documents: {sum(1 for row in quality_rows if row.quality_score >= 70)}
 - Stale/deprecated/archive documents: {stale_count}
+
+## Source Runs
+
+{source_run_lines}
+
+## Current Page Failures
+
+{failure_summary}
 """
     path = out_dir / "enrichment_summary.md"
     atomic_write_text(path, content)

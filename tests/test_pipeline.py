@@ -12,7 +12,12 @@ import mimir_wiki.pipeline as pipeline
 from mimir_wiki.cache_reader import CacheReader
 from mimir_wiki.config import load_config
 from mimir_wiki.llm.probe import generate_probe_png
-from mimir_wiki.pipeline import enrich_command, extract_visuals_command, validate_cache_command
+from mimir_wiki.pipeline import (
+    enrich_command,
+    extract_visuals_command,
+    report_command,
+    validate_cache_command,
+)
 from mimir_wiki.writers.onyx_markdown import render_visual_extraction
 
 
@@ -90,6 +95,109 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert (tmp_path / "reports" / "llm_usage.md").exists()
     assert (tmp_path / "reports" / "visual_extraction.md").exists()
     assert any((tmp_path / "runs").glob("*/summary.json"))
+
+
+def test_report_scopes_run_artifacts_to_selected_dataset(tiny_cache: Path, tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    selected_run = runs / "20260622T010000Z-enrich-selected"
+    other_run = runs / "20260622T020000Z-enrich-other"
+    for run_dir, dataset, cache, page_id in (
+        (selected_run, "tiny", tiny_cache, "123"),
+        (other_run, "other", tmp_path / "cache" / "other", "999"),
+    ):
+        run_dir.mkdir(parents=True)
+        run_id = run_dir.name
+        (run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "mimir-wiki/v1",
+                    "run_id": run_id,
+                    "generated_at": "2026-06-22T00:00:00Z",
+                    "generator": "mimir-wiki",
+                    "dataset_name": dataset,
+                    "command": "enrich",
+                    "started_at": "2026-06-22T00:00:00Z",
+                    "finished_at": "2026-06-22T00:01:00Z",
+                    "elapsed_seconds": 60,
+                    "status": "partial_success",
+                    "exit_code": 3,
+                    "cache_path": str(cache),
+                    "counts": {"pages_processed": 1, "pages_failed": 1},
+                    "outputs": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "page_failures.jsonl").write_text(
+            json.dumps(
+                {
+                    "schema_version": "mimir-wiki/v1",
+                    "run_id": run_id,
+                    "generated_at": "2026-06-22T00:00:00Z",
+                    "generator": "mimir-wiki",
+                    "dataset_name": dataset,
+                    "source_system": "confluence",
+                    "document_id": f"confluence:IDENTITY:{page_id}",
+                    "page_id": page_id,
+                    "space_key": "IDENTITY",
+                    "source_updated_at": "2026-05-01T12:45:00Z",
+                    "source_content_hash": "sha256:a",
+                    "stage": "enrich",
+                    "error_type": "SelectedError" if dataset == "tiny" else "OtherError",
+                    "message": "selected" if dataset == "tiny" else "other",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "llm_usage.jsonl").write_text(
+            json.dumps(
+                {
+                    "schema_version": "mimir-wiki/v1",
+                    "run_id": run_id,
+                    "generated_at": "2026-06-22T00:00:00Z",
+                    "generator": "mimir-wiki",
+                    "dataset_name": dataset,
+                    "source_system": "confluence",
+                    "document_id": f"confluence:IDENTITY:{page_id}",
+                    "page_id": page_id,
+                    "space_key": "IDENTITY",
+                    "source_updated_at": "2026-05-01T12:45:00Z",
+                    "source_content_hash": "sha256:a",
+                    "task": "summary",
+                    "provider": "mock",
+                    "model": "mock-model",
+                    "prompt_version": "summary-v1",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(runs),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = report_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    page_failures = (tmp_path / "reports" / "page_failures.md").read_text(encoding="utf-8")
+    assert "SelectedError" in page_failures
+    assert "OtherError" not in page_failures
+    llm_usage = (tmp_path / "reports" / "llm_usage.md").read_text(encoding="utf-8")
+    assert "summary" in llm_usage
+    summary = (tmp_path / "reports" / "enrichment_summary.md").read_text(encoding="utf-8")
+    assert "20260622T010000Z-enrich-selected" in summary
+    assert "20260622T020000Z-enrich-other" not in summary
 
 
 def test_onyx_markdown_strips_outline_number_from_display_title(

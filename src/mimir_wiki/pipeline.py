@@ -58,7 +58,14 @@ from mimir_wiki.schemas import (
     VisualIndexRow,
     WarningRecord,
 )
-from mimir_wiki.utils import atomic_write_json, atomic_write_jsonl, load_jsonl, new_run_id, utc_now
+from mimir_wiki.utils import (
+    atomic_write_json,
+    atomic_write_jsonl,
+    load_json,
+    load_jsonl,
+    new_run_id,
+    utc_now,
+)
 from mimir_wiki.visual_extraction import (
     VisualPayloadProvider,
     VisualSource,
@@ -1731,21 +1738,78 @@ def _read_quality_rows(path: Path) -> list[QualityScoreRow]:
     return [QualityScoreRow.model_validate(row) for row in load_jsonl(path)]
 
 
-def _read_run_llm_usage(runs_dir: Path) -> list[LLMUsage]:
+def _same_cache_path(left: str | None, right: Path) -> bool:
+    if not left:
+        return False
+    try:
+        return Path(left).resolve(strict=False) == right.resolve(strict=False)
+    except OSError:
+        return left == str(right)
+
+
+def _read_run_summaries(
+    runs_dir: Path, *, dataset_name: str, cache_path: Path | None = None
+) -> list[RunSummary]:
+    summaries: list[RunSummary] = []
+    if not runs_dir.exists():
+        return summaries
+    for path in sorted(runs_dir.glob("*/summary.json")):
+        try:
+            summary = RunSummary.model_validate(load_json(path))
+        except (OSError, ValueError, ValidationError):
+            continue
+        if summary.dataset_name != dataset_name:
+            continue
+        if (
+            cache_path is not None
+            and summary.cache_path
+            and not _same_cache_path(summary.cache_path, cache_path)
+        ):
+            continue
+        summaries.append(summary)
+    return summaries
+
+
+def _latest_source_run_summaries(summaries: list[RunSummary]) -> list[RunSummary]:
+    latest_by_command: dict[str, RunSummary] = {}
+    for summary in summaries:
+        if summary.command not in {"enrich", "extract-visuals"}:
+            continue
+        existing = latest_by_command.get(summary.command)
+        if existing is None or summary.run_id > existing.run_id:
+            latest_by_command[summary.command] = summary
+    return sorted(latest_by_command.values(), key=lambda item: item.run_id)
+
+
+def _read_run_llm_usage(runs_dir: Path, run_ids: set[str], dataset_name: str) -> list[LLMUsage]:
     usage: list[LLMUsage] = []
     if not runs_dir.exists():
         return usage
-    for path in sorted(runs_dir.glob("*/llm_usage.jsonl")):
-        usage.extend(LLMUsage.model_validate(row) for row in load_jsonl(path))
+    for run_id in sorted(run_ids):
+        path = runs_dir / run_id / "llm_usage.jsonl"
+        if not path.exists():
+            continue
+        usage.extend(
+            LLMUsage.model_validate(row)
+            for row in load_jsonl(path)
+            if row.get("dataset_name") == dataset_name
+        )
     return usage
 
 
-def _read_run_failures(runs_dir: Path) -> list[PageFailure]:
+def _read_run_failures(runs_dir: Path, run_ids: set[str], dataset_name: str) -> list[PageFailure]:
     failures: list[PageFailure] = []
     if not runs_dir.exists():
         return failures
-    for path in sorted(runs_dir.glob("*/page_failures.jsonl")):
-        failures.extend(PageFailure.model_validate(row) for row in load_jsonl(path))
+    for run_id in sorted(run_ids):
+        path = runs_dir / run_id / "page_failures.jsonl"
+        if not path.exists():
+            continue
+        failures.extend(
+            PageFailure.model_validate(row)
+            for row in load_jsonl(path)
+            if row.get("dataset_name") == dataset_name
+        )
     return failures
 
 
@@ -1827,8 +1891,12 @@ def report_command(
         quality_rows = _read_quality_rows(quality_scores)
     enrichments = _read_enrichments(reader, limit)
     visual_pages = _visual_report_pages(reader.iter_pages(limit=limit))
-    llm_usage = _read_run_llm_usage(Path(config.paths.runs))
-    failures = _read_run_failures(Path(config.paths.runs))
+    runs_root = Path(config.paths.runs)
+    run_summaries = _read_run_summaries(runs_root, dataset_name=dataset_name, cache_path=cache_path)
+    source_run_summaries = _latest_source_run_summaries(run_summaries)
+    source_run_ids = {summary.run_id for summary in source_run_summaries}
+    llm_usage = _read_run_llm_usage(runs_root, source_run_ids, dataset_name)
+    failures = _read_run_failures(runs_root, source_run_ids, dataset_name)
     emit_progress("inputs loaded")
     if not dry_run:
         report_writers: list[tuple[str, Callable[[], Path], str]] = [
@@ -1844,6 +1912,8 @@ def report_command(
                     dataset_name=dataset_name,
                     document_rows=document_rows,
                     quality_rows=quality_rows,
+                    source_run_summaries=source_run_summaries,
+                    page_failures=failures,
                 ),
                 "report",
             ),
