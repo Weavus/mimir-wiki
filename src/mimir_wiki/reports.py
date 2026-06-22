@@ -308,6 +308,81 @@ def write_attachment_followups_report(
     return path
 
 
+def write_onyx_export_risk_report(*, out_dir: Path, document_rows: list[DocumentIndexRow]) -> Path:
+    risk_rows: list[list[str]] = []
+    for row in sorted(document_rows, key=onyx_export_risk_score, reverse=True):
+        score = onyx_export_risk_score(row)
+        if score <= 0:
+            continue
+        risk_rows.append(
+            [
+                row.space_key,
+                row.page_id,
+                str(score),
+                row.audience,
+                row.sensitivity,
+                ", ".join(onyx_export_risk_reasons(row)),
+                row.title,
+                row.url or "",
+            ]
+        )
+    table = (
+        markdown_table(
+            ["Space", "Page ID", "Risk", "Audience", "Sensitivity", "Reasons", "Title", "URL"],
+            risk_rows[:200],
+        )
+        if risk_rows
+        else "No elevated Onyx export risks found."
+    )
+    content = f"""# Onyx Export Risk
+
+Pages listed here should be reviewed before uploading enriched source Markdown to a broad
+Onyx connector.
+
+{table}
+"""
+    path = out_dir / "onyx_export_risk.md"
+    atomic_write_text(path, content)
+    return path
+
+
+def onyx_export_risk_score(row: DocumentIndexRow) -> int:
+    score = 0
+    if row.audience == "restricted_internal":
+        score += 30
+    if row.sensitivity not in {"internal", "public"}:
+        score += 30
+    high_risk_flags = {
+        "contains_customer_case_data",
+        "contains_email_addresses",
+        "contains_log_links",
+        "manual_review_required",
+        "requires_restricted_audience",
+        "not_for_execution_until_verified",
+    }
+    score += 10 * len(high_risk_flags & set(row.review_flags))
+    return score
+
+
+def onyx_export_risk_reasons(row: DocumentIndexRow) -> list[str]:
+    reasons: list[str] = []
+    if row.audience == "restricted_internal":
+        reasons.append("restricted_audience")
+    if row.sensitivity not in {"internal", "public"}:
+        reasons.append(row.sensitivity)
+    for flag in sorted(row.review_flags):
+        if flag in {
+            "contains_customer_case_data",
+            "contains_email_addresses",
+            "contains_log_links",
+            "manual_review_required",
+            "requires_restricted_audience",
+            "not_for_execution_until_verified",
+        }:
+            reasons.append(flag)
+    return reasons
+
+
 def write_duplicate_candidates_report(
     *, out_dir: Path, document_rows: list[DocumentIndexRow]
 ) -> Path:

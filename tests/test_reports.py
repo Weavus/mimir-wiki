@@ -8,6 +8,7 @@ from mimir_wiki.reports import (
     write_high_value_sources_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
+    write_onyx_export_risk_report,
     write_page_failures_report,
     write_visual_extraction_report,
 )
@@ -177,6 +178,22 @@ def test_high_value_sources_penalizes_dated_operational_records(tmp_path: Path) 
     assert "Priority" in content
     assert content.index("ForgeRock Support Runbook") < content.index("Service Review Meeting")
     assert "dated_operational_record" in content
+
+
+def test_onyx_export_risk_report_flags_restricted_content(tmp_path: Path) -> None:
+    risky = _row("1", "Customer Incident Runbook", "0000000000000001", "0000000000000001")
+    risky.audience = "restricted_internal"
+    risky.sensitivity = "customer_confidential"
+    risky.review_flags = ["contains_customer_case_data", "requires_restricted_audience"]
+    safe = _row("2", "Public Overview", "0000000000000002", "0000000000000002")
+
+    path = write_onyx_export_risk_report(out_dir=tmp_path, document_rows=[safe, risky])
+    content = path.read_text(encoding="utf-8")
+
+    assert "Customer Incident Runbook" in content
+    assert "customer_confidential" in content
+    assert "contains_customer_case_data" in content
+    assert "Public Overview" not in content
 
 
 def test_visual_extraction_report_includes_operational_triage_sections(
