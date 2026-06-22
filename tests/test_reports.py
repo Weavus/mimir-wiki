@@ -354,7 +354,10 @@ def test_entity_and_fact_quality_reports(tmp_path: Path) -> None:
     entity_path = write_entity_quality_report(out_dir=tmp_path, entity_rows=[entity])
     fact_path = write_fact_quality_report(out_dir=tmp_path, fact_rows=[fact])
 
-    assert "URL/contact/ticket entities" in entity_path.read_text(encoding="utf-8")
+    entity_content = entity_path.read_text(encoding="utf-8")
+    assert "URL/contact/ticket entities" in entity_content
+    assert "Contact/link records" in entity_content
+    assert "contact_link_record" in entity_content
     fact_content = fact_path.read_text(encoding="utf-8")
     assert "Evidence hints" in fact_content
     assert "Downstream-usable facts" in fact_content
