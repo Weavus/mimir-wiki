@@ -2122,6 +2122,7 @@ def report_command(
                     onyx_root=Path(config.paths.dist_onyx_enriched),
                     dataset_name=dataset_name,
                     document_rows=document_rows,
+                    cache_pages_total=validation.pages_total,
                     reconcile=reconcile_onyx,
                 ),
                 "report",

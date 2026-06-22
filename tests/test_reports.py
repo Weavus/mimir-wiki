@@ -273,8 +273,11 @@ def test_onyx_export_integrity_report_flags_and_reconciles_files(tmp_path: Path)
         onyx_root=tmp_path / "dist",
         dataset_name="tiny",
         document_rows=[current],
+        cache_pages_total=2,
     )
     content = report_path.read_text(encoding="utf-8")
+    assert "| Cache pages | 2 |" in content
+    assert "| Cache pages missing from document index | 1 |" in content
     assert "stale" in content
     assert "duplicate" in content
     assert "unparseable" in content

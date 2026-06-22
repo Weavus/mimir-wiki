@@ -528,6 +528,7 @@ def write_onyx_export_integrity_report(
     onyx_root: Path,
     dataset_name: str,
     document_rows: list[DocumentIndexRow],
+    cache_pages_total: int | None = None,
     reconcile: bool = False,
 ) -> Path:
     audit = audit_onyx_exports(
@@ -537,6 +538,14 @@ def write_onyx_export_integrity_report(
         reconcile=reconcile,
     )
     summary_rows = [
+        ["Cache pages", str(cache_pages_total if cache_pages_total is not None else "unknown")],
+        ["Document index pages", str(len(document_rows))],
+        [
+            "Cache pages missing from document index",
+            str(max(0, cache_pages_total - len(document_rows)))
+            if cache_pages_total is not None
+            else "unknown",
+        ],
         ["Current page files", str(audit.current_files)],
         ["Stale files", str(len(audit.stale_files))],
         ["Duplicate page files", str(len(audit.duplicate_files))],
