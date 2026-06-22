@@ -805,7 +805,17 @@ def write_duplicate_candidates_report(
     )
     cluster_table = (
         markdown_table(
-            ["Cluster", "Reason", "Count", "Recommended keeper", "Documents"], cluster_rows[:100]
+            [
+                "Family",
+                "Family type",
+                "Versions",
+                "Environments",
+                "Regions",
+                "Count",
+                "Recommended keeper",
+                "Documents",
+            ],
+            cluster_rows[:100],
         )
         if cluster_rows
         else "No duplicate clusters found."
@@ -845,10 +855,14 @@ def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[s
             continue
         seen_clusters.add(doc_keys)
         keeper = recommended_duplicate_keeper(group)
+        family = duplicate_family_metadata(group)
         rows.append(
             [
                 key[:80],
-                reason,
+                family["family_type"] if reason == "near_title_family" else reason,
+                family["versions"],
+                family["environments"],
+                family["regions"],
                 str(len(group)),
                 f"{keeper.space_key}:{keeper.page_id} {keeper.title}",
                 ", ".join(doc_keys[:20]),
@@ -896,11 +910,78 @@ def near_title_clusters(document_rows: list[DocumentIndexRow]) -> dict[str, list
 
 
 def common_title_cluster_key(group: list[DocumentIndexRow]) -> str:
-    token_sets = [set(normalize_term(row.title).split()) for row in group]
+    token_sets = [set(canonical_title_tokens(row.title)) for row in group]
     common = set.intersection(*token_sets) if token_sets else set()
     if common:
         return " ".join(sorted(common))[:80]
     return normalize_term(group[0].title)[:80]
+
+
+def canonical_title_tokens(title: str) -> list[str]:
+    normalized = normalize_term(title)
+    tokens = []
+    noisy_tokens = {
+        "ppe",
+        "prod",
+        "production",
+        "dev",
+        "qa",
+        "use1",
+        "euw1",
+        "apse1",
+        "east",
+        "west",
+        "southeast",
+        "us",
+        "eu",
+        "ap",
+        "hotfix",
+        "fix",
+    }
+    for token in normalized.split():
+        if token in noisy_tokens:
+            continue
+        if re.fullmatch(r"v?\d+(?:\.\d+){1,3}", token):
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def duplicate_family_metadata(group: list[DocumentIndexRow]) -> dict[str, str]:
+    versions: set[str] = set()
+    environments: set[str] = set()
+    regions: set[str] = set()
+    for row in group:
+        title = row.title.lower()
+        versions.update(re.findall(r"\b\d+\.\d+(?:\.\d+)?\b", title))
+        if "ppe" in title:
+            environments.add("PPE")
+        if "prod" in title or "production" in title:
+            environments.add("PROD")
+        if "dev" in title:
+            environments.add("DEV")
+        if "qa" in title:
+            environments.add("QA")
+        for pattern, label in {
+            r"\buse1\b|us-east-1": "us-east-1",
+            r"\beuw1\b|eu-west-1": "eu-west-1",
+            r"\bapse1\b|ap-southeast-1": "ap-southeast-1",
+        }.items():
+            if re.search(pattern, title):
+                regions.add(label)
+    family_type = "true_duplicate"
+    if len(versions) > 1:
+        family_type = "version_series"
+    elif len(regions) > 1:
+        family_type = "regional_variant"
+    elif len(environments) > 1:
+        family_type = "environment_variant"
+    return {
+        "family_type": family_type,
+        "versions": ", ".join(sorted(versions)) or "-",
+        "environments": ", ".join(sorted(environments)) or "-",
+        "regions": ", ".join(sorted(regions)) or "-",
+    }
 
 
 def recommended_duplicate_keeper(group: list[DocumentIndexRow]) -> DocumentIndexRow:

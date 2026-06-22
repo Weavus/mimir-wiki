@@ -91,7 +91,8 @@ def test_duplicate_report_clusters_near_title_families(tmp_path: Path) -> None:
         ],
     )
     content = path.read_text(encoding="utf-8")
-    assert "near_title_family" in content
+    assert "version_series" in content
+    assert "1.1.0, 1.2.0, 1.3.0" in content
     assert "SPACE:1, SPACE:2, SPACE:3" in content
 
 
