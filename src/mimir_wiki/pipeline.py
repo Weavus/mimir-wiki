@@ -1797,6 +1797,24 @@ def _latest_source_run_summaries(summaries: list[RunSummary]) -> list[RunSummary
     return sorted(latest_by_command.values(), key=lambda item: item.run_id)
 
 
+def _select_source_run_summaries(
+    summaries: list[RunSummary], *, source_run_ids: list[str] | None, all_runs: bool
+) -> list[RunSummary]:
+    source_summaries = [
+        summary for summary in summaries if summary.command in {"enrich", "extract-visuals"}
+    ]
+    if source_run_ids:
+        requested = set(source_run_ids)
+        selected = [summary for summary in source_summaries if summary.run_id in requested]
+        missing = sorted(requested - {summary.run_id for summary in selected})
+        if missing:
+            raise ValueError(f"Unknown source run IDs for selected cache: {', '.join(missing)}")
+        return sorted(selected, key=lambda item: item.run_id)
+    if all_runs:
+        return sorted(source_summaries, key=lambda item: item.run_id)
+    return _latest_source_run_summaries(summaries)
+
+
 def _read_run_llm_usage(runs_dir: Path, run_ids: set[str], dataset_name: str) -> list[LLMUsage]:
     usage: list[LLMUsage] = []
     if not runs_dir.exists():
@@ -1863,6 +1881,9 @@ def report_command(
     profile: str | None,
     dry_run: bool,
     limit: int | None = None,
+    source_run_ids: list[str] | None = None,
+    all_runs: bool = False,
+    reconcile_onyx: bool = False,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> CommandResult:
@@ -1878,6 +1899,7 @@ def report_command(
     enrichments: list[Enrichment] = []
     visual_pages: list[VisualReportPage] = []
     failures: list[PageFailure] = []
+    source_run_summaries: list[RunSummary] = []
 
     reports_planned = 14
     reports_written = 0
@@ -1895,6 +1917,7 @@ def report_command(
                 "visual_artifacts": len(visual_pages),
                 "warnings": sum(1 for issue in validation.issues if issue.level == "warning"),
                 "failures": validation.pages_failed + len(failures),
+                "source_runs": len(source_run_summaries),
                 "current_report": current_report,
             }
         )
@@ -1909,7 +1932,9 @@ def report_command(
     visual_pages = _visual_report_pages(reader.iter_pages(limit=limit))
     runs_root = Path(config.paths.runs)
     run_summaries = _read_run_summaries(runs_root, dataset_name=dataset_name, cache_path=cache_path)
-    source_run_summaries = _latest_source_run_summaries(run_summaries)
+    source_run_summaries = _select_source_run_summaries(
+        run_summaries, source_run_ids=source_run_ids, all_runs=all_runs
+    )
     source_run_ids = {summary.run_id for summary in source_run_summaries}
     llm_usage = _read_run_llm_usage(runs_root, source_run_ids, dataset_name)
     failures = _read_run_failures(runs_root, source_run_ids, dataset_name)
@@ -1996,6 +2021,7 @@ def report_command(
                     onyx_root=Path(config.paths.dist_onyx_enriched),
                     dataset_name=dataset_name,
                     document_rows=document_rows,
+                    reconcile=reconcile_onyx,
                 ),
                 "report",
             ),
@@ -2047,6 +2073,8 @@ def report_command(
             "pages_processed": len(document_rows),
             "pages_skipped_unchanged": 0,
             "pages_failed": validation.pages_failed,
+            "source_runs": len(source_run_summaries),
+            "onyx_reconcile": int(reconcile_onyx),
         },
         output_paths=output_paths,
     )

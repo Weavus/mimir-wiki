@@ -99,11 +99,13 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
 
 def test_report_scopes_run_artifacts_to_selected_dataset(tiny_cache: Path, tmp_path: Path) -> None:
     runs = tmp_path / "runs"
+    old_selected_run = runs / "20260622T000000Z-enrich-old-selected"
     selected_run = runs / "20260622T010000Z-enrich-selected"
     other_run = runs / "20260622T020000Z-enrich-other"
-    for run_dir, dataset, cache, page_id in (
-        (selected_run, "tiny", tiny_cache, "123"),
-        (other_run, "other", tmp_path / "cache" / "other", "999"),
+    for run_dir, dataset, cache, page_id, error_type in (
+        (old_selected_run, "tiny", tiny_cache, "122", "OldSelectedError"),
+        (selected_run, "tiny", tiny_cache, "123", "SelectedError"),
+        (other_run, "other", tmp_path / "cache" / "other", "999", "OtherError"),
     ):
         run_dir.mkdir(parents=True)
         run_id = run_dir.name
@@ -143,8 +145,8 @@ def test_report_scopes_run_artifacts_to_selected_dataset(tiny_cache: Path, tmp_p
                     "source_updated_at": "2026-05-01T12:45:00Z",
                     "source_content_hash": "sha256:a",
                     "stage": "enrich",
-                    "error_type": "SelectedError" if dataset == "tiny" else "OtherError",
-                    "message": "selected" if dataset == "tiny" else "other",
+                    "error_type": error_type,
+                    "message": error_type,
                 }
             )
             + "\n",
@@ -192,12 +194,27 @@ def test_report_scopes_run_artifacts_to_selected_dataset(tiny_cache: Path, tmp_p
     assert result.exit_code == 0
     page_failures = (tmp_path / "reports" / "page_failures.md").read_text(encoding="utf-8")
     assert "SelectedError" in page_failures
+    assert "OldSelectedError" not in page_failures
     assert "OtherError" not in page_failures
     llm_usage = (tmp_path / "reports" / "llm_usage.md").read_text(encoding="utf-8")
     assert "summary" in llm_usage
     summary = (tmp_path / "reports" / "enrichment_summary.md").read_text(encoding="utf-8")
     assert "20260622T010000Z-enrich-selected" in summary
+    assert "20260622T000000Z-enrich-old-selected" not in summary
     assert "20260622T020000Z-enrich-other" not in summary
+
+    result = report_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        source_run_ids=["20260622T000000Z-enrich-old-selected"],
+    )
+
+    assert result.exit_code == 0
+    page_failures = (tmp_path / "reports" / "page_failures.md").read_text(encoding="utf-8")
+    assert "OldSelectedError" in page_failures
+    assert "| IDENTITY | 123 | enrich | SelectedError |" not in page_failures
 
 
 def test_onyx_markdown_strips_outline_number_from_display_title(

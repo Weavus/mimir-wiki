@@ -906,6 +906,24 @@ def report(
     cache: CacheOption = None,
     out: OutOption = None,
     limit: LimitOption = None,
+    source_run_id: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--source-run-id",
+            help="Use a specific enrich/extract-visuals run as report input. Repeatable.",
+        ),
+    ] = None,
+    all_runs: Annotated[
+        bool,
+        typer.Option("--all-runs", help="Include all matching source runs for this cache."),
+    ] = False,
+    reconcile_onyx: Annotated[
+        bool,
+        typer.Option(
+            "--reconcile-onyx",
+            help="Remove stale and duplicate Onyx Markdown files while writing integrity report.",
+        ),
+    ] = False,
     dry_run: DryRunOption = False,
     json_output: JsonOption = False,
     no_color: NoColorOption = False,
@@ -943,6 +961,9 @@ def report(
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
+                    source_run_ids=source_run_id,
+                    all_runs=all_runs,
+                    reconcile_onyx=reconcile_onyx,
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
@@ -953,6 +974,9 @@ def report(
                 profile=profile,
                 dry_run=dry_run,
                 limit=limit,
+                source_run_ids=source_run_id,
+                all_runs=all_runs,
+                reconcile_onyx=reconcile_onyx,
                 event_callback=lambda event: _write_log(log_file, event),
             )
         _write_log(
