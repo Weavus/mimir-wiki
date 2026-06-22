@@ -10,6 +10,7 @@ from mimir_wiki.enrichers.llm import (
     apply_llm_enrichment,
     enabled_llm_work_items,
     load_prompt_template,
+    normalize_document_type,
     validate_task_payload,
 )
 from mimir_wiki.llm.base import LLMRequest, LLMResponse
@@ -288,3 +289,34 @@ def test_classification_schema_normalizes_common_aliases() -> None:
         )["document_type"]
         == "design"
     )
+
+
+def test_classification_schema_normalizes_observed_aliases() -> None:
+    assert normalize_document_type("howto") == "knowledge_article"
+    assert normalize_document_type("runbook_detail") == "runbook"
+    assert normalize_document_type("installation_guide") == "runbook"
+    assert normalize_document_type("procedure_page") == "runbook"
+    assert normalize_document_type("service_review") == "meeting_notes"
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "installation guide", "confidence": 0.8}
+        )["document_type"]
+        == "runbook"
+    )
+
+
+def test_bundle_response_accepts_large_but_valid_evidence() -> None:
+    payload = validate_task_payload(
+        "bundle:semantic",
+        {
+            "key_facts": [
+                {
+                    "label": "Evidence",
+                    "value": "available",
+                    "confidence": 0.8,
+                    "evidence": "x" * 6000,
+                }
+            ]
+        },
+    )
+    assert payload["key_facts"][0]["evidence"] == "x" * 6000

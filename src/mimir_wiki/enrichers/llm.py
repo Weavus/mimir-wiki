@@ -79,10 +79,15 @@ DOCUMENT_TYPE_ALIASES = {
     "architecture_decision_record": "design",
     "faq": "knowledge_article",
     "frequently asked questions": "knowledge_article",
+    "howto": "knowledge_article",
     "how to": "knowledge_article",
     "how-to": "knowledge_article",
+    "installation guide": "runbook",
+    "installation_guide": "runbook",
     "performance test": "reference",
     "performance_test": "reference",
+    "procedure page": "runbook",
+    "procedure_page": "runbook",
     "report": "reference",
     "release note": "change_record",
     "release notes": "change_record",
@@ -93,7 +98,11 @@ DOCUMENT_TYPE_ALIASES = {
     "requirements": "design",
     "requirement document": "design",
     "readme": "knowledge_article",
+    "runbook detail": "runbook",
+    "runbook_detail": "runbook",
     "runbook_index": "runbook",
+    "service review": "meeting_notes",
+    "service_review": "meeting_notes",
     "template": "reference",
     "test report": "reference",
     "test_report": "reference",
@@ -134,7 +143,7 @@ class LLMCandidateEntity(LLMTaskModel):
     entity_type: str = Field(min_length=1, max_length=80)
     aliases: list[str] = Field(default_factory=list, max_length=20)
     confidence: float = Field(ge=0, le=1, default=0.65)
-    evidence: str = Field(min_length=1, max_length=2000)
+    evidence: str = Field(min_length=1, max_length=4000)
 
 
 class CandidateEntitiesResponse(LLMTaskModel):
@@ -153,7 +162,7 @@ class LLMKeyFact(LLMTaskModel):
     label: str = Field(min_length=1, max_length=80)
     value: str = Field(min_length=1, max_length=300)
     confidence: float = Field(ge=0, le=1, default=0.75)
-    evidence: str | None = Field(default=None, max_length=4000)
+    evidence: str | None = Field(default=None, max_length=8000)
 
 
 class BundleResponse(LLMTaskModel):
@@ -167,7 +176,7 @@ class BundleResponse(LLMTaskModel):
     candidate_entities: list[LLMCandidateEntity] | None = Field(default=None, max_length=100)
     operational_signals: OperationalSignals | None = None
     warnings: list[str] | None = Field(default=None, max_length=100)
-    key_facts: list[LLMKeyFact] | None = Field(default=None, max_length=120)
+    key_facts: list[LLMKeyFact] | None = Field(default=None, max_length=200)
 
     @field_validator("document_type")
     @classmethod
