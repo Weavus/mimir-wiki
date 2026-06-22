@@ -249,6 +249,19 @@ def classify_document(bundle: PageBundle) -> tuple[str, float]:
         ]
     ).lower()
     title = bundle.metadata.title.lower()
+    title_and_path = f"{title}\n{' '.join(bundle.ancestor_titles).lower()}"
+    if any(term in title_and_path for term in ("daily handover", "handover")):
+        return "meeting_notes", 0.9
+    if "service review" in title_and_path and "meeting" in title_and_path:
+        return "meeting_notes", 0.88
+    if any(term in title for term in ("release notes", "release report", "release plan")):
+        return "change_record", 0.86
+    if any(term in title for term in ("test report", "testing result", "load testing result")):
+        return "reference", 0.86
+    if any(term in title for term in ("dr test", "disaster recovery test")):
+        return "project_plan", 0.84
+    if any(term in title for term in ("operational log", "activity log")):
+        return "reference", 0.82
     if "open questions" in title or "questions log" in title:
         return "reference", 0.9
     if "scenario catalog" in title:
@@ -926,6 +939,11 @@ def is_procedural_runbook(bundle: PageBundle) -> bool:
 def infer_document_subtype(bundle: PageBundle, document_type: str) -> str | None:
     text = f"{bundle.metadata.title}\n{' '.join(bundle.ancestor_titles)}".lower()
     subtype_rules = [
+        ("daily_handover", ("daily handover", "handover")),
+        ("service_review_notes", ("service review meeting", "service review notes")),
+        ("release_instance", ("release notes", "release report", "release plan")),
+        ("dr_test_plan", ("dr test", "disaster recovery test")),
+        ("operational_log", ("operational log", "activity log")),
         ("database_information", ("database information",)),
         ("operational_monitor", ("provisioning and deprovisioning monitor", "operational monitor")),
         ("integration_path", ("integration path", "tier 1:", "tier 2:", "tier 3:")),
@@ -960,12 +978,17 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
         return document_type
     strong_subtype_type_map = {
         "api_specification": "reference",
+        "daily_handover": "meeting_notes",
+        "dr_test_plan": "project_plan",
         "integration_path": "onboarding",
+        "operational_log": "reference",
         "operational_monitor": "reference",
         "performance_test_report": "reference",
         "question_log": "reference",
+        "release_instance": "change_record",
         "release_report": "change_record",
         "scenario_catalog": "reference",
+        "service_review_notes": "meeting_notes",
     }
     if document_subtype in strong_subtype_type_map:
         return strong_subtype_type_map[document_subtype]
@@ -975,13 +998,18 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
         "api_specification": "reference",
         "business_overview": "reference",
         "database_information": "reference",
+        "daily_handover": "meeting_notes",
+        "dr_test_plan": "project_plan",
         "faq": "knowledge_article",
         "integration_path": "onboarding",
+        "operational_log": "reference",
         "operational_monitor": "reference",
         "performance_test_report": "reference",
         "question_log": "reference",
+        "release_instance": "change_record",
         "release_report": "change_record",
         "scenario_catalog": "reference",
+        "service_review_notes": "meeting_notes",
         "technical_document": "reference",
         "technical_design": "design",
     }

@@ -367,6 +367,66 @@ def test_question_log_classifies_as_reference(tiny_cache: Path, tmp_path: Path) 
     assert enrichment["document_subtype"] == "question_log"
 
 
+def test_daily_handover_classifies_as_meeting_notes(tiny_cache: Path, tmp_path: Path) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "CIAM AAA 05-2026 RE Daily Handover"
+    metadata["labels"] = []
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (tiny_cache / "pages" / "123" / "text.txt").write_text(
+        "Daily handover incident ticket release check support group restart notes",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["document_type"] == "meeting_notes"
+    assert enrichment["document_subtype"] == "daily_handover"
+
+
+def test_service_review_classifies_as_meeting_notes(tiny_cache: Path, tmp_path: Path) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "2026-05-14 CIAM Ping Service Review Meeting"
+    metadata["labels"] = []
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (tiny_cache / "pages" / "123" / "text.txt").write_text(
+        "Service review meeting work items support group recovery release notes",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["document_type"] == "meeting_notes"
+    assert enrichment["document_subtype"] == "service_review_notes"
+
+
 def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     clean_path.write_text(

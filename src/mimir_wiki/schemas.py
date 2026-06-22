@@ -368,6 +368,7 @@ class DocumentIndexRow(PageScopedArtifact):
     version: int | None = None
     document_type: str
     document_type_confidence: float = Field(ge=0, le=1)
+    document_subtype: str | None = None
     status_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     audience: str = "internal"
