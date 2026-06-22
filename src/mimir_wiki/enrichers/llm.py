@@ -524,6 +524,16 @@ async def _apply_llm_enrichment_async(
                     stage=f"llm.{work_item.name}",
                     exc=exc,
                     attempts=getattr(exc, "attempts", 1),
+                    error_context={
+                        "task": work_item.name,
+                        "requested_tasks": work_item.tasks,
+                        "provider": work_item.provider,
+                        "model": work_item.model,
+                        "prompt_version": work_item.prompt_version,
+                        "chunk_index": chunk_index,
+                        "chunk_count": len(chunks),
+                        "source_content_hash": bundle.source_content_hash,
+                    },
                 )
                 result.enrichment.llm_failures.append(failure.model_dump(mode="json"))
                 result.warnings.append(
@@ -543,6 +553,9 @@ async def _apply_llm_enrichment_async(
                             "page_id": bundle.metadata.page_id,
                             "space_key": bundle.metadata.space_key,
                             "task": work_item.name,
+                            "provider": work_item.provider,
+                            "model": work_item.model,
+                            "prompt_version": work_item.prompt_version,
                             "chunk_index": chunk_index,
                             "chunk_count": len(chunks),
                             "error_type": failure.error_type,
@@ -1156,6 +1169,7 @@ def _failure(
     stage: str,
     exc: Exception,
     attempts: int,
+    error_context: dict[str, Any] | None = None,
 ) -> PageFailure:
     retryable = bool(getattr(exc, "retryable", False))
     error_type = str(getattr(exc, "error_type", type(exc).__name__))
@@ -1178,6 +1192,7 @@ def _failure(
         retryable=retryable,
         attempts=attempts,
         suggested_action=suggested,
+        error_context=error_context or {},
     )
 
 

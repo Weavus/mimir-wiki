@@ -219,6 +219,9 @@ def test_llm_enrichment_keeps_deterministic_output_on_unexpected_errors(
     assert not result.failures
     assert result.enrichment.short_summary
     assert result.enrichment.llm_failures[0]["error_type"] == "OSError"
+    assert result.enrichment.llm_failures[0]["error_context"]["task"] == "summary"
+    assert result.enrichment.llm_failures[0]["error_context"]["provider"] == "openai"
+    assert result.enrichment.llm_failures[0]["error_context"]["model"] == "mock-model"
     assert result.warnings[0].warning_type == "llm_task_failed:summary"
 
 
