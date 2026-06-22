@@ -1965,6 +1965,7 @@ def report_command(
     source_run_ids: list[str] | None = None,
     all_runs: bool = False,
     reconcile_onyx: bool = False,
+    allow_partial_source_runs: bool = False,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> CommandResult:
@@ -2172,8 +2173,22 @@ def report_command(
     else:
         reports_written = reports_planned
         emit_progress("planned")
-    exit_code = EXIT_SUCCESS if validation.ok else EXIT_USER_ERROR
-    status = "success" if validation.ok else "failed"
+    source_pages_failed = sum(
+        summary.counts.get("pages_failed", 0) for summary in source_run_summaries
+    )
+    partial_source_runs = any(
+        summary.exit_code == EXIT_PARTIAL_SUCCESS or summary.status == "partial_success"
+        for summary in source_run_summaries
+    )
+    if not validation.ok:
+        exit_code = EXIT_USER_ERROR
+        status = "failed"
+    elif partial_source_runs and not allow_partial_source_runs:
+        exit_code = EXIT_PARTIAL_SUCCESS
+        status = "partial_success"
+    else:
+        exit_code = EXIT_SUCCESS
+        status = "success"
     summary = context.build_summary(
         status=status,
         exit_code=exit_code,
@@ -2184,6 +2199,8 @@ def report_command(
             "pages_skipped_unchanged": 0,
             "pages_failed": validation.pages_failed,
             "source_runs": len(source_run_summaries),
+            "source_pages_failed": source_pages_failed,
+            "partial_source_runs": int(partial_source_runs),
             "onyx_reconcile": int(reconcile_onyx),
         },
         output_paths=output_paths,

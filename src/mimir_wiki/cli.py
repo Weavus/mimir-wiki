@@ -924,6 +924,15 @@ def report(
             help="Remove stale and duplicate Onyx Markdown files while writing integrity report.",
         ),
     ] = False,
+    allow_partial_source_runs: Annotated[
+        bool,
+        typer.Option(
+            "--allow-partial-source-runs",
+            help=(
+                "Return success even when selected enrich/extract-visuals source runs are partial."
+            ),
+        ),
+    ] = False,
     dry_run: DryRunOption = False,
     json_output: JsonOption = False,
     no_color: NoColorOption = False,
@@ -964,6 +973,7 @@ def report(
                     source_run_ids=source_run_id,
                     all_runs=all_runs,
                     reconcile_onyx=reconcile_onyx,
+                    allow_partial_source_runs=allow_partial_source_runs,
                     progress_callback=progress_callback,
                     event_callback=lambda event: _write_log(log_file, event),
                 )
@@ -977,6 +987,7 @@ def report(
                 source_run_ids=source_run_id,
                 all_runs=all_runs,
                 reconcile_onyx=reconcile_onyx,
+                allow_partial_source_runs=allow_partial_source_runs,
                 event_callback=lambda event: _write_log(log_file, event),
             )
         _write_log(

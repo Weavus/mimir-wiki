@@ -34,7 +34,9 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
         }
     )
     result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
-    assert result.exit_code == 0
+    assert result.exit_code == 3
+    assert result.summary.status == "partial_success"
+    assert result.summary.counts["source_pages_failed"] == 1
     enrichment_path = tiny_cache / "pages" / "123" / "enrichment.json"
     assert enrichment_path.exists()
     enrichment = json.loads(enrichment_path.read_text(encoding="utf-8"))
@@ -191,7 +193,9 @@ def test_report_scopes_run_artifacts_to_selected_dataset(tiny_cache: Path, tmp_p
 
     result = report_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
 
-    assert result.exit_code == 0
+    assert result.exit_code == 3
+    assert result.summary.status == "partial_success"
+    assert result.summary.counts["source_pages_failed"] == 1
     page_failures = (tmp_path / "reports" / "page_failures.md").read_text(encoding="utf-8")
     assert "SelectedError" in page_failures
     assert "OldSelectedError" not in page_failures
@@ -211,10 +215,21 @@ def test_report_scopes_run_artifacts_to_selected_dataset(tiny_cache: Path, tmp_p
         source_run_ids=["20260622T000000Z-enrich-old-selected"],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 3
     page_failures = (tmp_path / "reports" / "page_failures.md").read_text(encoding="utf-8")
     assert "OldSelectedError" in page_failures
     assert "| IDENTITY | 123 | enrich | SelectedError |" not in page_failures
+
+    result = report_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=False,
+        source_run_ids=["20260622T000000Z-enrich-old-selected"],
+        allow_partial_source_runs=True,
+    )
+
+    assert result.exit_code == 0
 
 
 def test_onyx_markdown_strips_outline_number_from_display_title(
