@@ -261,6 +261,85 @@ def write_high_value_sources_report(
     return path
 
 
+def write_review_queue_report(
+    *, out_dir: Path, document_rows: list[DocumentIndexRow], quality_rows: list[QualityScoreRow]
+) -> Path:
+    quality_by_doc = {row.document_id: row.quality_score for row in quality_rows}
+    queue_rows: list[list[str]] = []
+    for row in sorted(
+        document_rows,
+        key=lambda item: review_queue_priority(item, quality_by_doc.get(item.document_id, 0)),
+        reverse=True,
+    ):
+        priority = review_queue_priority(row, quality_by_doc.get(row.document_id, 0))
+        reasons = review_queue_reasons(row)
+        if priority < 40 and "manual_review_required" not in row.review_flags:
+            continue
+        queue_rows.append(
+            [
+                str(priority),
+                row.space_key,
+                row.page_id,
+                row.document_type,
+                row.document_subtype or "",
+                str(quality_by_doc.get(row.document_id, 0)),
+                ", ".join(reasons),
+                row.title,
+                row.url or "",
+            ]
+        )
+    table = (
+        markdown_table(
+            [
+                "Priority",
+                "Space",
+                "Page ID",
+                "Type",
+                "Subtype",
+                "Quality",
+                "Reasons",
+                "Title",
+                "URL",
+            ],
+            queue_rows[:200],
+        )
+        if queue_rows
+        else "No review candidates found."
+    )
+    content = f"# Review Queue\n\n{table}\n"
+    path = out_dir / "review_queue.md"
+    atomic_write_text(path, content)
+    return path
+
+
+def review_queue_priority(row: DocumentIndexRow, quality_score: int) -> int:
+    priority = quality_score - source_review_penalty(row)
+    if "manual_review_required" in row.review_flags:
+        priority += 30
+    if row.document_type in {"runbook", "support_model", "architecture"}:
+        priority += 15
+    if any(
+        flag in row.review_flags
+        for flag in ("visual_content_missing", "attachment_content_missing")
+    ):
+        priority += 10
+    if row.sensitivity not in {"internal", "public"}:
+        priority += 10
+    return max(0, priority)
+
+
+def review_queue_reasons(row: DocumentIndexRow) -> list[str]:
+    reasons = source_review_reason(row).split(", ")
+    if "manual_review_required" in row.review_flags:
+        reasons.append("manual_review_required")
+    if row.sensitivity not in {"internal", "public"}:
+        reasons.append("sensitive_content")
+    for flag in ("visual_content_missing", "attachment_content_missing"):
+        if flag in row.review_flags:
+            reasons.append(flag)
+    return [reason for reason in dict.fromkeys(reasons) if reason]
+
+
 def source_review_penalty(row: DocumentIndexRow) -> int:
     title = normalize_term(row.title)
     penalty = 0
@@ -509,6 +588,7 @@ def onyx_export_risk_reasons(row: DocumentIndexRow) -> list[str]:
 def write_duplicate_candidates_report(
     *, out_dir: Path, document_rows: list[DocumentIndexRow]
 ) -> Path:
+    cluster_rows = duplicate_cluster_rows(document_rows)
     by_hash: dict[str, list[DocumentIndexRow]] = defaultdict(list)
     by_title: dict[str, list[DocumentIndexRow]] = defaultdict(list)
     for row in document_rows:
@@ -578,10 +658,69 @@ def write_duplicate_candidates_report(
         if rows
         else "No duplicate candidates found."
     )
-    content = f"# Duplicate Candidates\n\n{table}\n"
+    cluster_table = (
+        markdown_table(
+            ["Cluster", "Reason", "Count", "Recommended keeper", "Documents"], cluster_rows[:100]
+        )
+        if cluster_rows
+        else "No duplicate clusters found."
+    )
+    content = f"""# Duplicate Candidates
+
+## Clusters
+
+{cluster_table}
+
+## Pairwise Evidence
+
+{table}
+"""
     path = out_dir / "duplicate_candidates.md"
     atomic_write_text(path, content)
     return path
+
+
+def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[str]]:
+    groups: dict[tuple[str, str], list[DocumentIndexRow]] = defaultdict(list)
+    for row in document_rows:
+        if row.source_content_hash:
+            groups[("content_hash", row.source_content_hash)].append(row)
+        normalized_title = normalize_term(row.title)
+        if normalized_title:
+            groups[("normalized_title", normalized_title)].append(row)
+    rows: list[list[str]] = []
+    seen_clusters: set[tuple[str, ...]] = set()
+    for (reason, key), group in sorted(groups.items()):
+        if len(group) < 2:
+            continue
+        doc_keys = tuple(sorted(f"{row.space_key}:{row.page_id}" for row in group))
+        if doc_keys in seen_clusters:
+            continue
+        seen_clusters.add(doc_keys)
+        keeper = recommended_duplicate_keeper(group)
+        rows.append(
+            [
+                key[:80],
+                reason,
+                str(len(group)),
+                f"{keeper.space_key}:{keeper.page_id} {keeper.title}",
+                ", ".join(doc_keys[:20]),
+            ]
+        )
+    return rows
+
+
+def recommended_duplicate_keeper(group: list[DocumentIndexRow]) -> DocumentIndexRow:
+    return sorted(
+        group,
+        key=lambda row: (
+            "deprecated" not in row.status_flags and "archived" not in row.status_flags,
+            row.document_type in {"runbook", "support_model", "architecture", "knowledge_article"},
+            row.source_updated_at or "",
+            row.word_count,
+        ),
+        reverse=True,
+    )[0]
 
 
 def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:

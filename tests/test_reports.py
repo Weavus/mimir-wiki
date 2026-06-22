@@ -12,6 +12,7 @@ from mimir_wiki.reports import (
     write_onyx_export_integrity_report,
     write_onyx_export_risk_report,
     write_page_failures_report,
+    write_review_queue_report,
     write_visual_extraction_report,
 )
 from mimir_wiki.schemas import (
@@ -59,6 +60,44 @@ def test_duplicate_report_includes_body_and_heading_simhash(tmp_path: Path) -> N
     content = path.read_text(encoding="utf-8")
     assert "body_simhash" in content
     assert "heading_simhash" in content
+
+
+def test_duplicate_report_includes_cluster_recommendation(tmp_path: Path) -> None:
+    path = write_duplicate_candidates_report(
+        out_dir=tmp_path,
+        document_rows=[
+            _row("1", "ForgeRock Support Runbook", "0000000000000000", "000000000000000f"),
+            _row("2", "ForgeRock Support Runbook", "0000000000000001", "000000000000000e"),
+        ],
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "## Clusters" in content
+    assert "Recommended keeper" in content
+    assert "SPACE:1" in content
+
+
+def test_review_queue_report_prioritizes_manual_review(tmp_path: Path) -> None:
+    row = _row("1", "Restricted Runbook", "0000000000000001", "0000000000000001")
+    row.review_flags = ["manual_review_required", "visual_content_missing"]
+    row.sensitivity = "restricted"
+    quality = QualityScoreRow(
+        run_id="run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        document_id=row.document_id,
+        page_id=row.page_id,
+        space_key=row.space_key,
+        source_content_hash=row.source_content_hash,
+        quality_score=55,
+        quality_band="fair",
+        dimensions={},
+    )
+
+    path = write_review_queue_report(out_dir=tmp_path, document_rows=[row], quality_rows=[quality])
+    content = path.read_text(encoding="utf-8")
+    assert "Restricted Runbook" in content
+    assert "manual_review_required" in content
+    assert "sensitive_content" in content
 
 
 def test_llm_usage_report_includes_cache_hit_rate(tmp_path: Path) -> None:

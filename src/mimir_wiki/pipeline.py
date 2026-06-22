@@ -44,6 +44,7 @@ from mimir_wiki.reports import (
     write_onyx_export_integrity_report,
     write_onyx_export_risk_report,
     write_page_failures_report,
+    write_review_queue_report,
     write_stale_or_deprecated_report,
     write_visual_extraction_report,
 )
@@ -1901,7 +1902,7 @@ def report_command(
     failures: list[PageFailure] = []
     source_run_summaries: list[RunSummary] = []
 
-    reports_planned = 14
+    reports_planned = 15
     reports_written = 0
 
     def emit_progress(current_report: str = "-") -> None:
@@ -1975,6 +1976,15 @@ def report_command(
             (
                 "high_value_sources.md",
                 lambda: write_high_value_sources_report(
+                    out_dir=reports_dir,
+                    document_rows=document_rows,
+                    quality_rows=quality_rows,
+                ),
+                "report",
+            ),
+            (
+                "review_queue.md",
+                lambda: write_review_queue_report(
                     out_dir=reports_dir,
                     document_rows=document_rows,
                     quality_rows=quality_rows,
