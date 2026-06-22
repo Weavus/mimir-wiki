@@ -302,28 +302,28 @@ artifacts:
 profiles:
   customer-identity-and-access-management-entra:
     paths:
-      cache: ../mimir-confluence/cache/customer-identity-and-access-management-entra
+      cache: ../mimir-confluence/cache/confluence/customer-identity-and-access-management-entra
       knowledge: ./knowledge/customer-identity-and-access-management-entra
       reports: ./reports/customer-identity-and-access-management-entra
       runs: ./runs/customer-identity-and-access-management-entra
 
   aaa-domain-application-support:
     paths:
-      cache: ../mimir-confluence/cache/aaa-domain-application-support
+      cache: ../mimir-confluence/cache/confluence/aaa-domain-application-support
       knowledge: ./knowledge/aaa-domain-application-support
       reports: ./reports/aaa-domain-application-support
       runs: ./runs/aaa-domain-application-support
 
   carel3support:
     paths:
-      cache: ../mimir-confluence/cache/carel3support
+      cache: ../mimir-confluence/cache/confluence/carel3support
       knowledge: ./knowledge/carel3support
       reports: ./reports/carel3support
       runs: ./runs/carel3support
 
   carel3support-rca:
     paths:
-      cache: ../mimir-confluence/cache/carel3support-rca
+      cache: ../mimir-confluence/cache/confluence/carel3support-rca
       knowledge: ./knowledge/carel3support-rca
       reports: ./reports/carel3support-rca
       runs: ./runs/carel3support-rca
