@@ -783,11 +783,11 @@ def trim_payload_for_validation(payload: dict[str, Any]) -> tuple[dict[str, Any]
                 changed = True
                 return value[:limit]
         if isinstance(value, list):
-            limit = FIELD_LIST_LIMITS.get(key)
+            list_limit = FIELD_LIST_LIMITS.get(key)
             items = value
-            if limit is not None and len(items) > limit:
+            if list_limit is not None and len(items) > list_limit:
                 changed = True
-                items = items[:limit]
+                items = items[:list_limit]
             return [trim_value("", item) for item in items]
         if isinstance(value, dict):
             return {

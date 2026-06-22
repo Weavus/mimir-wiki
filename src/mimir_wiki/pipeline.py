@@ -1911,6 +1911,8 @@ def report_command(
     output_paths: list[Path] = []
     document_rows: list[DocumentIndexRow] = []
     quality_rows: list[QualityScoreRow] = []
+    entity_rows: list[CandidateEntityRow] = []
+    fact_rows: list[CandidateFactRow] = []
     enrichments: list[Enrichment] = []
     visual_pages: list[VisualReportPage] = []
     failures: list[PageFailure] = []
@@ -1958,9 +1960,9 @@ def report_command(
     source_run_summaries = _select_source_run_summaries(
         run_summaries, source_run_ids=source_run_ids, all_runs=all_runs
     )
-    source_run_ids = {summary.run_id for summary in source_run_summaries}
-    llm_usage = _read_run_llm_usage(runs_root, source_run_ids, dataset_name)
-    failures = _read_run_failures(runs_root, source_run_ids, dataset_name)
+    selected_source_run_ids = {summary.run_id for summary in source_run_summaries}
+    llm_usage = _read_run_llm_usage(runs_root, selected_source_run_ids, dataset_name)
+    failures = _read_run_failures(runs_root, selected_source_run_ids, dataset_name)
     emit_progress("inputs loaded")
     if not dry_run:
         report_writers: list[tuple[str, Callable[[], Path], str]] = [
