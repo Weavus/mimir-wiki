@@ -446,6 +446,23 @@ def test_llm_payload_trims_oversized_fields_before_validation() -> None:
     assert warnings == ["trimmed_fields"]
 
 
+def test_bundle_response_normalizes_quality_warnings_alias() -> None:
+    work_item = LLMWorkItem(
+        name="bundle:operational",
+        prompt_task="bundle:operational",
+        tasks=["quality_warnings"],
+        provider="mock",
+        model="mock",
+        prompt_version="operational-v1",
+    )
+    payload, warnings = validate_work_item_payload_with_warnings(
+        work_item,
+        {"quality_warnings": ["missing owner"]},
+    )
+    assert payload["warnings"] == ["missing owner"]
+    assert warnings == ["normalized_fields"]
+
+
 def test_entity_type_normalization_handles_urls_contacts_and_queues() -> None:
     assert normalize_entity_type("AWS SQS queue", name="orders") == "queue"
     assert normalize_entity_type("support team", name="Identity L3") == "support_group"

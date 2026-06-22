@@ -910,13 +910,24 @@ def validate_task_payload(task: str, payload: dict[str, Any]) -> dict[str, Any]:
 def validate_task_payload_with_warnings(
     task: str, payload: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
+    payload, normalized = normalize_quality_warning_alias(payload)
     payload, trimmed = trim_payload_for_validation(payload)
     model = TASK_RESPONSE_MODELS.get(task)
     if model is None:
-        return payload, ["trimmed_fields"] if trimmed else []
+        warnings = []
+        if normalized:
+            warnings.append("normalized_fields")
+        if trimmed:
+            warnings.append("trimmed_fields")
+        return payload, warnings
+    warnings = []
+    if normalized:
+        warnings.append("normalized_fields")
+    if trimmed:
+        warnings.append("trimmed_fields")
     return (
         model.model_validate(payload).model_dump(mode="python", exclude_none=True),
-        ["trimmed_fields"] if trimmed else [],
+        warnings,
     )
 
 
@@ -928,8 +939,13 @@ def validate_work_item_payload(work_item: LLMWorkItem, payload: dict[str, Any]) 
 def validate_work_item_payload_with_warnings(
     work_item: LLMWorkItem, payload: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
+    payload, normalized = normalize_quality_warning_alias(payload)
     payload, trimmed = trim_payload_for_validation(payload)
-    warnings = ["trimmed_fields"] if trimmed else []
+    warnings = []
+    if normalized:
+        warnings.append("normalized_fields")
+    if trimmed:
+        warnings.append("trimmed_fields")
     if len(work_item.tasks) == 1:
         validated, task_warnings = validate_task_payload_with_warnings(work_item.tasks[0], payload)
         return validated, sorted(set(warnings + task_warnings))
@@ -940,6 +956,18 @@ def validate_work_item_payload_with_warnings(
             _, task_warnings = validate_task_payload_with_warnings(task, task_payload)
             warnings.extend(task_warnings)
     return validated, sorted(set(warnings))
+
+
+def normalize_quality_warning_alias(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    if "quality_warnings" not in payload:
+        return payload, False
+    normalized = dict(payload)
+    value = normalized.pop("quality_warnings")
+    if "warnings" not in normalized:
+        normalized["warnings"] = value
+    elif isinstance(normalized["warnings"], list) and isinstance(value, list):
+        normalized["warnings"] = [*normalized["warnings"], *value]
+    return normalized, True
 
 
 def _task_payload_keys(task: str) -> tuple[str, ...]:
