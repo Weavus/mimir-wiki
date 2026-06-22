@@ -990,9 +990,11 @@ def merge_task_payload(
     if task == "summary":
         for payload in payloads:
             if isinstance(payload.get("short_summary"), str):
-                enrichment.short_summary = payload["short_summary"][:1000]
+                enrichment.short_summary = sanitize_generated_text(payload["short_summary"])[:1000]
             if isinstance(payload.get("detailed_summary"), str):
-                enrichment.detailed_summary = payload["detailed_summary"][:6000]
+                enrichment.detailed_summary = sanitize_generated_text(payload["detailed_summary"])[
+                    :6000
+                ]
         return
     if task == "keywords":
         enrichment.keywords = _merge_strings(
@@ -1078,7 +1080,7 @@ def merge_task_payload(
                 if not isinstance(raw, dict):
                     continue
                 label = str(raw.get("label") or "").strip()[:80]
-                value = str(raw.get("value") or "").strip()[:300]
+                value = sanitize_generated_text(str(raw.get("value") or "").strip())[:300]
                 if not label or not value:
                     continue
                 key = (label.lower(), value.lower())
@@ -1091,7 +1093,11 @@ def merge_task_payload(
                         label=label,
                         value=value,
                         confidence=max(0, min(1, float(confidence))),
-                        evidence=str(raw.get("evidence"))[:500] if raw.get("evidence") else None,
+                        evidence=(
+                            sanitize_generated_text(str(raw.get("evidence")))[:500]
+                            if raw.get("evidence")
+                            else None
+                        ),
                         method="llm",
                     )
                 )
@@ -1111,6 +1117,21 @@ def _collect_strings(payloads: list[dict[str, Any]], key: str) -> list[str]:
                 elif isinstance(value, dict) and isinstance(value.get(key[:-1]), str):
                     values.append(value[key[:-1]])
     return values
+
+
+def sanitize_generated_text(value: str) -> str:
+    replacements = [
+        (r"\bdocument chunk\b", "document"),
+        (r"\bsource chunk\b", "source excerpt"),
+        (r"\bthe chunk\b", "the document"),
+        (r"\bthis chunk\b", "this document"),
+        (r"\bprovided chunk\b", "provided source excerpt"),
+        (r"\bsupplied chunk\b", "supplied source excerpt"),
+    ]
+    sanitized = value
+    for pattern, replacement in replacements:
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    return sanitized
 
 
 def _merge_strings(existing: list[str], added: list[str], limit: int) -> list[str]:

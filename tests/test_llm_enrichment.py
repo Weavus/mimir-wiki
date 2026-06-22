@@ -13,6 +13,7 @@ from mimir_wiki.enrichers.llm import (
     load_prompt_template,
     normalize_document_type,
     parse_json_response_with_warnings,
+    sanitize_generated_text,
     validate_task_payload,
     validate_work_item_payload_with_warnings,
 )
@@ -390,3 +391,11 @@ def test_entity_type_normalization_handles_urls_contacts_and_queues() -> None:
     assert normalize_entity_type("support team", name="Identity L3") == "support_group"
     assert normalize_entity_type("external_url", name="https://example.com") == "url"
     assert normalize_entity_type("person", name="user@example.com") == "contact"
+
+
+def test_generated_text_sanitizer_removes_chunk_wording() -> None:
+    assert sanitize_generated_text("The chunk covers setup.") == "the document covers setup."
+    assert (
+        sanitize_generated_text("This document chunk contains metadata.")
+        == "This document contains metadata."
+    )
