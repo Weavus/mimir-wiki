@@ -145,11 +145,11 @@ visual_extraction:
   max_images_per_representative_group: 3
 
 llm:
-  max_concurrency: 8
+  max_concurrency: 12
   requests_per_minute: null
   tokens_per_minute: null
   adaptive_concurrency: true
-  adaptive_initial_concurrency: 5
+  adaptive_initial_concurrency: 8
   adaptive_min_concurrency: 1
 ```
 
