@@ -194,18 +194,6 @@ def _snapshot_int(snapshot: dict[str, object], key: str, default: int = 0) -> in
     return default
 
 
-def _snapshot_float(snapshot: dict[str, object], key: str, default: float = 0) -> float:
-    value = snapshot.get(key, default)
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
-
-
 def _fmt_duration(seconds: float | None) -> str:
     if seconds is None or seconds <= 0:
         return "-"
@@ -304,7 +292,7 @@ class FixedProgressDashboard:
         percent = done / total * 100
         eta = elapsed / done * (total - done) if done > 0 and total > done else None
         return (
-            f"[bold cyan]{label:<10}[/bold cyan] {_text_bar(percent)}  "
+            f"{_label(label)} {_text_bar(percent)}  "
             f"{done:,}/{total:,} {unit}  [cyan]{percent:5.1f}%[/cyan]  "
             f"ETA [dim]{_fmt_duration(eta)}[/dim]  Elapsed [dim]{_fmt_duration(elapsed)}[/dim]"
         )
@@ -330,7 +318,7 @@ class FixedProgressDashboard:
             (
                 "work",
                 (
-                    f"[bold cyan]Work      [/bold cyan] processed "
+                    f"{_label('Work')} processed "
                     f"{_snapshot_int(self.snapshot, 'processed'):,}   skipped "
                     f"{_snapshot_int(self.snapshot, 'skipped'):,}   failed {failed}"
                 ),
@@ -338,7 +326,7 @@ class FixedProgressDashboard:
             (
                 "llm",
                 (
-                    f"[bold cyan]LLM       [/bold cyan] tasks {task_done:,}/{llm_planned:,}   "
+                    f"{_label('LLM')} tasks {task_done:,}/{llm_planned:,}   "
                     f"live {live_calls:,}   in-flight {in_flight:,}   cached {cached_calls:,}   "
                     f"retries {retries}   429s {rate_limits}"
                 ),
@@ -346,7 +334,7 @@ class FixedProgressDashboard:
             (
                 "tokens",
                 (
-                    f"[bold cyan]Tokens    [/bold cyan] live in {live_input:,} "
+                    f"{_label('Tokens')} live in {live_input:,} "
                     f"out {live_output:,}   avg {_avg_tokens(live_input, live_calls)}/"
                     f"{_avg_tokens(live_output, live_calls)}   cache saved in "
                     f"{cached_input:,} out {cached_output:,}"
@@ -355,17 +343,17 @@ class FixedProgressDashboard:
             (
                 "speed",
                 (
-                    f"[bold cyan]Speed     [/bold cyan] pages "
+                    f"{_label('Speed')} pages "
                     f"{_fmt_rate(considered / elapsed if elapsed else 0)}   live LLM "
                     f"{_fmt_rate(live_calls / elapsed if elapsed else 0)}   cache "
                     f"{_fmt_rate(cached_calls / elapsed if elapsed else 0)}"
                 ),
             ),
-            ("adaptive", f"[bold cyan]Adaptive  [/bold cyan] {self._adaptive_text()}"),
+            ("adaptive", f"{_label('Adaptive')} {self._adaptive_text()}"),
             (
                 "current",
                 (
-                    f"[bold cyan]Current   [/bold cyan] "
+                    f"{_label('Current')} "
                     f"{self.snapshot.get('llm_current_task') or '-'}   page "
                     f"{self.snapshot.get('llm_current_page') or '-'}   chunk "
                     f"{self.snapshot.get('llm_current_chunk') or '-'}/"
@@ -396,7 +384,7 @@ class FixedProgressDashboard:
             (
                 "pages",
                 (
-                    f"[bold cyan]Pages     [/bold cyan] "
+                    f"{_label('Pages')} "
                     f"{_snapshot_int(self.snapshot, 'processed'):,}/"
                     f"{_snapshot_int(self.snapshot, 'considered'):,} done   skipped "
                     f"{_snapshot_int(self.snapshot, 'skipped'):,}   failed {failed}"
@@ -405,7 +393,7 @@ class FixedProgressDashboard:
             (
                 "llm",
                 (
-                    f"[bold cyan]LLM       [/bold cyan] live {live_calls:,}   "
+                    f"{_label('LLM')} live {live_calls:,}   "
                     f"in-flight {in_flight:,}   cached "
                     f"{_snapshot_int(self.snapshot, 'images_cached'):,}   "
                     f"retries {retries}   429s {rate_limits}"
@@ -414,7 +402,7 @@ class FixedProgressDashboard:
             (
                 "tokens",
                 (
-                    f"[bold cyan]Tokens    [/bold cyan] input {live_input:,}   "
+                    f"{_label('Tokens')} input {live_input:,}   "
                     f"output {live_output:,}   avg {_avg_tokens(live_input, live_calls)}/"
                     f"{_avg_tokens(live_output, live_calls)}"
                 ),
@@ -422,17 +410,17 @@ class FixedProgressDashboard:
             (
                 "speed",
                 (
-                    f"[bold cyan]Speed     [/bold cyan] images "
+                    f"{_label('Speed')} images "
                     f"{_fmt_rate(done / elapsed if elapsed else 0)}   live LLM "
                     f"{_fmt_rate(live_calls / elapsed if elapsed else 0)}   tokens "
                     f"{_fmt_rate((live_input + live_output) / elapsed if elapsed else 0)}"
                 ),
             ),
-            ("adaptive", f"[bold cyan]Adaptive  [/bold cyan] {self._adaptive_text()}"),
+            ("adaptive", f"{_label('Adaptive')} {self._adaptive_text()}"),
             (
                 "current",
                 (
-                    f"[bold cyan]Current   [/bold cyan] page "
+                    f"{_label('Current')} page "
                     f"{self.snapshot.get('current_page') or '-'}   image "
                     f"{self.snapshot.get('current_image') or '-'}   "
                     f"{self.snapshot.get('current_status') or '-'}"
@@ -450,7 +438,7 @@ class FixedProgressDashboard:
             (
                 "inputs",
                 (
-                    f"[bold cyan]Inputs    [/bold cyan] pages "
+                    f"{_label('Inputs')} pages "
                     f"{_snapshot_int(self.snapshot, 'pages_total'):,}   docs "
                     f"{_snapshot_int(self.snapshot, 'document_rows'):,}   enrichments "
                     f"{_snapshot_int(self.snapshot, 'enrichments'):,}   visuals "
@@ -460,20 +448,17 @@ class FixedProgressDashboard:
             (
                 "health",
                 (
-                    f"[bold cyan]Health    [/bold cyan] warnings "
+                    f"{_label('Health')} warnings "
                     f"{_snapshot_int(self.snapshot, 'warnings'):,}   failures {failures}"
                 ),
             ),
             (
                 "speed",
-                (
-                    f"[bold cyan]Speed     [/bold cyan] reports "
-                    f"{_fmt_rate(done / elapsed if elapsed else 0)}"
-                ),
+                (f"{_label('Speed')} reports {_fmt_rate(done / elapsed if elapsed else 0)}"),
             ),
             (
                 "current",
-                f"[bold cyan]Current   [/bold cyan] {self.snapshot.get('current_report') or '-'}",
+                f"{_label('Current')} {self.snapshot.get('current_report') or '-'}",
             ),
         ]
 
@@ -489,7 +474,7 @@ class FixedProgressDashboard:
             (
                 "artifacts",
                 (
-                    f"[bold cyan]Artifacts [/bold cyan] metadata "
+                    f"{_label('Artifacts')} metadata "
                     f"{_snapshot_int(self.snapshot, 'metadata_checked'):,}   markdown "
                     f"{_snapshot_int(self.snapshot, 'markdown_checked'):,}   links "
                     f"{_snapshot_int(self.snapshot, 'links_checked'):,}   conversion "
@@ -498,22 +483,16 @@ class FixedProgressDashboard:
             ),
             (
                 "health",
-                (
-                    f"[bold cyan]Health    [/bold cyan] errors {errors}   "
-                    f"warnings {warnings}   failed {failed}"
-                ),
+                (f"{_label('Health')} errors {errors}   warnings {warnings}   failed {failed}"),
             ),
             (
                 "speed",
-                (
-                    f"[bold cyan]Speed     [/bold cyan] pages "
-                    f"{_fmt_rate(checked / elapsed if elapsed else 0)}"
-                ),
+                (f"{_label('Speed')} pages {_fmt_rate(checked / elapsed if elapsed else 0)}"),
             ),
             (
                 "current",
                 (
-                    f"[bold cyan]Current   [/bold cyan] page "
+                    f"{_label('Current')} page "
                     f"{self.snapshot.get('current_page') or '-'}   artifact "
                     f"{self.snapshot.get('current_artifact') or '-'}"
                 ),
@@ -543,6 +522,10 @@ class FixedProgressDashboard:
 def _text_bar(percent: float, *, width: int = 30) -> str:
     filled = max(0, min(width, round(width * percent / 100)))
     return "[cyan]" + "━" * filled + "╸" + "─" * max(0, width - filled - 1) + "[/cyan]"
+
+
+def _label(label: str) -> str:
+    return f"[bold cyan]{label:<10}[/bold cyan]"
 
 
 def _load_runtime_config(

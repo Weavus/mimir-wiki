@@ -333,6 +333,13 @@ class RateLimitedLLMClient:
                         raise
                     retries += 1
                     await self._sleep_for_retry(exc, attempts, request)
+                except Exception as exc:
+                    error = LLMError(str(exc), retryable=False, error_type=type(exc).__name__)
+                    await self._release_adaptive_slot(model_key, error=error)
+                    self._emit_provider_event(
+                        "llm_provider_call_failed", request, model_key, error=error
+                    )
+                    raise
 
     def _model_key(self, request: LLMRequest) -> str:
         return f"{self.provider.provider_name}:{request.model or self.config.model}"
