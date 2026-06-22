@@ -5,6 +5,7 @@ from pathlib import Path
 from mimir_wiki.reports import (
     VisualReportPage,
     write_duplicate_candidates_report,
+    write_high_value_sources_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
     write_page_failures_report,
@@ -19,6 +20,7 @@ from mimir_wiki.schemas import (
     OnyxMetadata,
     PageFailure,
     Quality,
+    QualityScoreRow,
     VisualExtractionArtifact,
     VisualExtractionImage,
 )
@@ -129,6 +131,52 @@ def test_page_failures_report_summarizes_failures(tmp_path: Path) -> None:
     assert "## Summary" in content
     assert "| enrich | SSLError | 2 |" in content
     assert "## Details" in content
+
+
+def test_high_value_sources_penalizes_dated_operational_records(tmp_path: Path) -> None:
+    canonical = _row("1", "ForgeRock Support Runbook", "0000000000000001", "0000000000000001")
+    handover = _row(
+        "2",
+        "2026-05-14 CIAM - Ping Service Review Meeting",
+        "0000000000000002",
+        "0000000000000002",
+    )
+    handover.document_type = "meeting_notes"
+    rows = [handover, canonical]
+    quality_rows = [
+        QualityScoreRow(
+            run_id="run-1",
+            dataset_name="tiny",
+            generated_at="2026-06-17T00:00:00Z",
+            document_id=handover.document_id,
+            page_id=handover.page_id,
+            space_key=handover.space_key,
+            source_content_hash=handover.source_content_hash,
+            quality_score=95,
+            quality_band="excellent",
+            dimensions={},
+        ),
+        QualityScoreRow(
+            run_id="run-1",
+            dataset_name="tiny",
+            generated_at="2026-06-17T00:00:00Z",
+            document_id=canonical.document_id,
+            page_id=canonical.page_id,
+            space_key=canonical.space_key,
+            source_content_hash=canonical.source_content_hash,
+            quality_score=80,
+            quality_band="good",
+            dimensions={},
+        ),
+    ]
+
+    path = write_high_value_sources_report(
+        out_dir=tmp_path, document_rows=rows, quality_rows=quality_rows
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "Priority" in content
+    assert content.index("ForgeRock Support Runbook") < content.index("Service Review Meeting")
+    assert "dated_operational_record" in content
 
 
 def test_visual_extraction_report_includes_operational_triage_sections(

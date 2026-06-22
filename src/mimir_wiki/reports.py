@@ -163,13 +163,18 @@ def write_high_value_sources_report(
     *, out_dir: Path, document_rows: list[DocumentIndexRow], quality_rows: list[QualityScoreRow]
 ) -> Path:
     quality_by_doc = {row.document_id: row.quality_score for row in quality_rows}
-    high_value = sorted(
-        document_rows,
-        key=lambda row: (
-            quality_by_doc.get(row.document_id, 0),
+
+    def review_priority(row: DocumentIndexRow) -> tuple[int, int, int]:
+        quality = quality_by_doc.get(row.document_id, 0)
+        return (
+            quality - source_review_penalty(row),
             row.outbound_link_count,
             row.word_count,
-        ),
+        )
+
+    high_value = sorted(
+        document_rows,
+        key=review_priority,
         reverse=True,
     )[:100]
     rows = [
@@ -177,17 +182,60 @@ def write_high_value_sources_report(
             row.space_key,
             row.page_id,
             str(quality_by_doc.get(row.document_id, 0)),
+            str(review_priority(row)[0]),
             row.document_type,
+            source_review_reason(row),
             row.title,
             row.url or "",
         ]
         for row in high_value
     ]
-    table = markdown_table(["Space", "Page ID", "Quality", "Type", "Title", "URL"], rows)
+    table = markdown_table(
+        ["Space", "Page ID", "Quality", "Priority", "Type", "Reason", "Title", "URL"],
+        rows,
+    )
     content = f"# High Value Sources\n\n{table}\n"
     path = out_dir / "high_value_sources.md"
     atomic_write_text(path, content)
     return path
+
+
+def source_review_penalty(row: DocumentIndexRow) -> int:
+    title = normalize_term(row.title)
+    penalty = 0
+    if row.document_type in {"meeting_notes", "project_plan", "change_record"}:
+        penalty += 20
+    if row.document_type in {"archive", "unknown"}:
+        penalty += 35
+    if any(flag in row.status_flags for flag in ("archived", "deprecated")):
+        penalty += 30
+    if "stale" in row.status_flags:
+        penalty += 10
+    if any(term in title for term in ("daily handover", "handover", "service review meeting")):
+        penalty += 25
+    if any(term in title for term in ("release", "rollback", "report")):
+        penalty += 15
+    if any(term in title for term in ("draft", "rejected", "template")):
+        penalty += 25
+    if "future_dated" in row.review_flags:
+        penalty += 20
+    return penalty
+
+
+def source_review_reason(row: DocumentIndexRow) -> str:
+    reasons: list[str] = []
+    title = normalize_term(row.title)
+    if row.document_type in {"runbook", "support_model", "architecture"}:
+        reasons.append("operational_source")
+    if row.document_type in {"meeting_notes", "project_plan", "change_record"}:
+        reasons.append("lower_authority_type")
+    if any(flag in row.status_flags for flag in ("stale", "archived", "deprecated")):
+        reasons.append("currentness_risk")
+    if any(term in title for term in ("handover", "service review meeting", "release", "rollback")):
+        reasons.append("dated_operational_record")
+    if "future_dated" in row.review_flags:
+        reasons.append("future_dated")
+    return ", ".join(reasons) or "candidate_canonical_source"
 
 
 def write_missing_owners_report(*, out_dir: Path, enrichments: list[Enrichment]) -> Path:
