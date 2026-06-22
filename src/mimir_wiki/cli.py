@@ -558,10 +558,27 @@ def _load_runtime_config(
     return load_config(config_path=config_path, profile=profile, cli_overrides=overrides)
 
 
+def _resolve_cache_path(config: AppConfig) -> Path:
+    if not config.paths.cache:
+        raise ValueError(
+            "Cache path is required: pass --cache or set paths.cache in config/profile."
+        )
+    cache_path = Path(config.paths.cache)
+    if not cache_path.exists() or not cache_path.is_dir():
+        raise ValueError(f"Cache path does not exist or is not a directory: {cache_path}")
+    return cache_path
+
+
 ConfigOption = Annotated[Path | None, typer.Option("--config", help="Path to mimir-wiki.yaml")]
 ProfileOption = Annotated[str | None, typer.Option("--profile", help="Config profile name")]
 CacheOption = Annotated[
-    Path, typer.Option("--cache", exists=True, file_okay=False, help="mimir-confluence cache path")
+    Path | None,
+    typer.Option(
+        "--cache",
+        exists=True,
+        file_okay=False,
+        help="mimir-confluence cache path; defaults to paths.cache from config/profile",
+    ),
 ]
 OutOption = Annotated[Path | None, typer.Option("--out", help="Output directory")]
 ProviderOption = Annotated[
@@ -583,7 +600,7 @@ DryRunOption = Annotated[bool, typer.Option("--dry-run", help="Validate and plan
 def validate_cache(
     config_path: ConfigOption = None,
     profile: ProfileOption = None,
-    cache: CacheOption = Path("cache"),
+    cache: CacheOption = None,
     out: OutOption = None,
     limit: LimitOption = None,
     dry_run: DryRunOption = False,
@@ -608,10 +625,11 @@ def validate_cache(
             redaction=None,
             reports_out=out,
         )
+        cache_path = _resolve_cache_path(config)
         if _show_progress(config, json_output=json_output, quiet=quiet):
             with FixedProgressDashboard(
                 command="validate-cache",
-                dataset=cache.name,
+                dataset=cache_path.name,
                 mode="validate-cache",
                 console=console,
             ) as dashboard:
@@ -621,7 +639,7 @@ def validate_cache(
 
                 result = validate_cache_command(
                     config=config,
-                    cache_path=cache,
+                    cache_path=cache_path,
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
@@ -631,7 +649,7 @@ def validate_cache(
         else:
             result = validate_cache_command(
                 config=config,
-                cache_path=cache,
+                cache_path=cache_path,
                 profile=profile,
                 dry_run=dry_run,
                 limit=limit,
@@ -660,7 +678,7 @@ def validate_cache(
 def enrich(
     config_path: ConfigOption = None,
     profile: ProfileOption = None,
-    cache: CacheOption = Path("cache"),
+    cache: CacheOption = None,
     out: OutOption = None,
     provider: ProviderOption = None,
     enable_llm: Annotated[
@@ -723,10 +741,11 @@ def enrich(
             redaction=redaction,
             onyx_out=onyx_out,
         )
+        cache_path = _resolve_cache_path(config)
         if _show_progress(config, json_output=json_output, quiet=quiet):
             with FixedProgressDashboard(
                 command="enrich",
-                dataset=cache.name,
+                dataset=cache_path.name,
                 provider=config.llm.provider,
                 model="mixed"
                 if config.llm.task_models or config.llm.task_bundles
@@ -740,7 +759,7 @@ def enrich(
 
                 result = enrich_command(
                     config=config,
-                    cache_path=cache,
+                    cache_path=cache_path,
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
@@ -754,7 +773,7 @@ def enrich(
         else:
             result = enrich_command(
                 config=config,
-                cache_path=cache,
+                cache_path=cache_path,
                 profile=profile,
                 dry_run=dry_run,
                 limit=limit,
@@ -787,7 +806,7 @@ def enrich(
 def extract_visuals(
     config_path: ConfigOption = None,
     profile: ProfileOption = None,
-    cache: CacheOption = Path("cache"),
+    cache: CacheOption = None,
     provider: ProviderOption = "azure-ai-foundry",
     model: Annotated[
         str, typer.Option("--model", help="Multimodal model/deployment for visual OCR")
@@ -825,10 +844,11 @@ def extract_visuals(
         data["visual_extraction"]["provider"] = provider or data["visual_extraction"]["provider"]
         data["visual_extraction"]["model"] = model
         config = AppConfig.model_validate(data)
+        cache_path = _resolve_cache_path(config)
         if _show_progress(config, json_output=json_output, quiet=quiet):
             with FixedProgressDashboard(
                 command="extract-visuals",
-                dataset=cache.name,
+                dataset=cache_path.name,
                 provider=config.visual_extraction.provider,
                 model=config.visual_extraction.model,
                 mode="extract-visuals",
@@ -840,7 +860,7 @@ def extract_visuals(
 
                 result = extract_visuals_command(
                     config=config,
-                    cache_path=cache,
+                    cache_path=cache_path,
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
@@ -852,7 +872,7 @@ def extract_visuals(
         else:
             result = extract_visuals_command(
                 config=config,
-                cache_path=cache,
+                cache_path=cache_path,
                 profile=profile,
                 dry_run=dry_run,
                 limit=limit,
@@ -883,7 +903,7 @@ def extract_visuals(
 def report(
     config_path: ConfigOption = None,
     profile: ProfileOption = None,
-    cache: CacheOption = Path("cache"),
+    cache: CacheOption = None,
     out: OutOption = None,
     limit: LimitOption = None,
     dry_run: DryRunOption = False,
@@ -908,9 +928,10 @@ def report(
             redaction=None,
             reports_out=out,
         )
+        cache_path = _resolve_cache_path(config)
         if _show_progress(config, json_output=json_output, quiet=quiet):
             with FixedProgressDashboard(
-                command="report", dataset=cache.name, mode="report", console=console
+                command="report", dataset=cache_path.name, mode="report", console=console
             ) as dashboard:
 
                 def progress_callback(snapshot: dict[str, object]) -> None:
@@ -918,7 +939,7 @@ def report(
 
                 result = report_command(
                     config=config,
-                    cache_path=cache,
+                    cache_path=cache_path,
                     profile=profile,
                     dry_run=dry_run,
                     limit=limit,
@@ -928,7 +949,7 @@ def report(
         else:
             result = report_command(
                 config=config,
-                cache_path=cache,
+                cache_path=cache_path,
                 profile=profile,
                 dry_run=dry_run,
                 limit=limit,

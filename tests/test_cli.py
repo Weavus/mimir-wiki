@@ -44,6 +44,47 @@ paths:
     assert payload["counts"]["pages_processed"] == 1
 
 
+def test_cli_profile_supplies_cache_and_scoped_outputs(tiny_cache: Path, tmp_path: Path) -> None:
+    runner = CliRunner()
+    config_file = tmp_path / "mimir-wiki.yaml"
+    config_file.write_text(
+        f"""
+profiles:
+  tiny:
+    paths:
+      cache: {tiny_cache}
+      knowledge: {tmp_path / "knowledge" / "tiny"}
+      reports: {tmp_path / "reports" / "tiny"}
+      runs: {tmp_path / "runs" / "tiny"}
+      dist_onyx_enriched: {tmp_path / "dist"}
+    llm:
+      provider: none
+      model: none
+""",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "enrich",
+            "--config",
+            str(config_file),
+            "--profile",
+            "tiny",
+            "--json",
+            "--quiet",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["cache_path"] == str(tiny_cache)
+    assert (tmp_path / "knowledge" / "tiny" / "document_index.jsonl").exists()
+    assert (tmp_path / "reports" / "tiny" / "enrichment_summary.md").exists()
+    assert any((tmp_path / "runs" / "tiny").glob("*/summary.json"))
+
+
 def test_cli_log_file_writes_jsonl(tiny_cache: Path, tmp_path: Path) -> None:
     runner = CliRunner()
     log_file = tmp_path / "logs" / "mimir-wiki.jsonl"

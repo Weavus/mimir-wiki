@@ -16,7 +16,8 @@ default and scriptable with `--json` and `--quiet`.
 
 - `--config PATH`: load a specific `mimir-wiki.yaml` file.
 - `--profile NAME`: apply a named config profile after base config.
-- `--cache PATH`: source `mimir-confluence` cache directory.
+- `--cache PATH`: source `mimir-confluence` cache directory. If omitted,
+  commands use `paths.cache` from the selected config/profile.
 - `--out PATH`: command-specific output directory.
 - `--limit INT`: process only the first N successful manifest pages.
 - `--dry-run`: validate and plan without writing command outputs.
@@ -28,6 +29,11 @@ default and scriptable with `--json` and `--quiet`.
 
 Config precedence is built-in defaults, config file, profile, `.env`, process
 environment variables, then CLI flags.
+
+For repeated work across multiple `mimir-confluence` archives, put `paths.cache`,
+`paths.knowledge`, `paths.reports` and usually `paths.runs` in a named profile.
+Then `--profile NAME` is enough to select both the source cache and its scoped
+generated outputs.
 
 Concurrency is configured in YAML. `processing.page_workers` bounds page-level
 work, while live LLM request concurrency is controlled by `llm.max_concurrency`
@@ -47,6 +53,13 @@ Validate one exported cache.
 ```bash
 UV_CACHE_DIR=.uv-cache uv run mimir-wiki validate-cache \
   --cache ./cache/customer-identity-and-access-management-entra
+```
+
+If the selected profile sets `paths.cache`, `--cache` can be omitted:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run mimir-wiki validate-cache \
+  --profile customer-identity-and-access-management-entra
 ```
 
 Important checks:
@@ -115,6 +128,9 @@ JSONL indexes under `knowledge/`, writes Onyx POC Markdown when enabled, and
 finishes by writing the standard report set. Use `--changed-only` for normal
 incremental runs and `--force` after changing enrichment logic or regenerated
 visual extraction artifacts.
+
+When using cache-specific profiles, the JSONL indexes are written under that
+profile's `paths.knowledge` instead of the shared default `knowledge/` root.
 
 `enrich` does not perform image OCR by itself. If `pages/{page_id}/visual_extraction.json`
 exists from a previous `extract-visuals` run, `enrich` reads it, adds

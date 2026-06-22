@@ -165,7 +165,7 @@ Common options:
 
 - `--config PATH`: load `mimir-wiki.yaml` from a specific path.
 - `--profile NAME`: apply a named profile from the config file after base config.
-- `--cache PATH`: source `mimir-confluence` cache directory.
+- `--cache PATH`: source `mimir-confluence` cache directory. If omitted, commands use `paths.cache` from the selected config/profile.
 - `--out PATH`: command-specific output directory. For `enrich`, this overrides `knowledge`; for `report` and `validate-cache`, this overrides `reports`.
 - `--limit INT`: process only the first N manifest pages, useful for smoke tests.
 - `--dry-run`: validate and plan without writing files.
@@ -180,6 +180,12 @@ Interactive long-running commands show live dashboards. `enrich` and
 retry/rate-limit health, adaptive concurrency state and current work.
 `validate-cache` and `report` use smaller local-artifact dashboards. Use `--json`
 and `--quiet` for script-friendly output.
+
+For multiple `mimir-confluence` archives, use one profile per archive with
+`paths.cache`, `paths.knowledge`, `paths.reports` and usually `paths.runs` set.
+Then `--profile NAME` selects both the cache and the scoped generated outputs,
+so the shared `knowledge/` and `reports/` files are not overwritten between
+archives.
 
 `enrich` options:
 
