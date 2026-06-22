@@ -246,6 +246,8 @@ class VisualExtractionConfig(BaseModel):
     model: str = "gpt-5.4-mini"
     prompt_version: str = "visual-ocr-v1"
     max_images_per_page: int = 20
+    high_priority_page_ids: list[str] = Field(default_factory=list)
+    high_priority_max_images_per_page: int | None = None
     skip_low_value_images: bool = True
     min_image_pixels: int = 4096
     adaptive_page_caps: bool = True

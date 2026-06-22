@@ -1307,6 +1307,42 @@ def test_extract_visuals_reports_images_omitted_by_page_cap(
     assert result.warnings[0].warning_type == "visual_images_omitted_by_page_cap"
 
 
+def test_extract_visuals_uses_high_priority_page_cap(tiny_cache: Path, tmp_path: Path) -> None:
+    image_data = base64.b64encode(generate_probe_png()).decode("ascii")
+    attachment_path = tiny_cache / "pages" / "123" / "attachments" / "second.png"
+    attachment_path.write_bytes(generate_probe_png())
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8")
+        + f"\n![Probe 1](data:image/png;base64,{image_data})\n"
+        + "\n![Probe 2](attachments/second.png)\n",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {"reports": str(tmp_path / "reports"), "runs": str(tmp_path / "runs")},
+            "llm": {"provider": "none"},
+            "visual_extraction": {
+                "max_images_per_page": 1,
+                "high_priority_page_ids": ["123"],
+                "high_priority_max_images_per_page": 2,
+            },
+        }
+    )
+
+    result = extract_visuals_command(
+        config=config,
+        cache_path=tiny_cache,
+        profile=None,
+        dry_run=True,
+    )
+
+    assert result.exit_code == 0
+    assert result.summary.counts["visual_images_discovered"] == 2
+    assert result.summary.counts["visual_images_considered"] == 2
+    assert result.summary.counts["visual_images_omitted_by_page_cap"] == 0
+
+
 def test_extract_visuals_ranks_sources_before_applying_page_cap(
     tiny_cache: Path, tmp_path: Path, monkeypatch
 ) -> None:

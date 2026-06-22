@@ -155,6 +155,11 @@ def rank_visual_sources(bundle: PageBundle, sources: list[VisualSource]) -> list
 
 def effective_visual_page_cap(bundle: PageBundle, config: AppConfig) -> int:
     configured_cap = config.visual_extraction.max_images_per_page
+    if (
+        bundle.metadata.page_id in set(config.visual_extraction.high_priority_page_ids)
+        and config.visual_extraction.high_priority_max_images_per_page is not None
+    ):
+        configured_cap = config.visual_extraction.high_priority_max_images_per_page
     if configured_cap < 0 or not config.visual_extraction.adaptive_page_caps:
         return configured_cap
     if is_report_like_page(bundle):
