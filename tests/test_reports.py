@@ -7,6 +7,7 @@ from mimir_wiki.reports import (
     write_duplicate_candidates_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
+    write_page_failures_report,
     write_visual_extraction_report,
 )
 from mimir_wiki.schemas import (
@@ -16,6 +17,7 @@ from mimir_wiki.schemas import (
     HierarchyContext,
     LLMUsage,
     OnyxMetadata,
+    PageFailure,
     Quality,
     VisualExtractionArtifact,
     VisualExtractionImage,
@@ -91,6 +93,42 @@ def test_llm_usage_report_includes_cache_hit_rate(tmp_path: Path) -> None:
     content = path.read_text(encoding="utf-8")
     assert "Cache hit rate" in content
     assert "50%" in content
+
+
+def test_page_failures_report_summarizes_failures(tmp_path: Path) -> None:
+    path = write_page_failures_report(
+        out_dir=tmp_path,
+        failures=[
+            PageFailure(
+                run_id="run-1",
+                dataset_name="tiny",
+                generated_at="2026-06-17T00:00:00Z",
+                document_id="confluence:SPACE:1",
+                page_id="1",
+                space_key="SPACE",
+                source_content_hash="sha256:a",
+                stage="enrich",
+                error_type="SSLError",
+                message="ssl failed",
+            ),
+            PageFailure(
+                run_id="run-1",
+                dataset_name="tiny",
+                generated_at="2026-06-17T00:00:00Z",
+                document_id="confluence:SPACE:2",
+                page_id="2",
+                space_key="SPACE",
+                source_content_hash="sha256:b",
+                stage="enrich",
+                error_type="SSLError",
+                message="ssl failed",
+            ),
+        ],
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "## Summary" in content
+    assert "| enrich | SSLError | 2 |" in content
+    assert "## Details" in content
 
 
 def test_visual_extraction_report_includes_operational_triage_sections(

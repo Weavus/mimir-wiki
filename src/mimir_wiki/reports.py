@@ -386,6 +386,16 @@ def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
 
 
 def write_page_failures_report(*, out_dir: Path, failures: list[PageFailure]) -> Path:
+    summary = "No page failures recorded."
+    if failures:
+        grouped = Counter((failure.stage, failure.error_type) for failure in failures)
+        summary = markdown_table(
+            ["Stage", "Error type", "Count"],
+            [
+                [stage, error_type, str(count)]
+                for (stage, error_type), count in grouped.most_common(20)
+            ],
+        )
     rows = [
         [
             failure.space_key,
@@ -402,7 +412,16 @@ def write_page_failures_report(*, out_dir: Path, failures: list[PageFailure]) ->
         if rows
         else "No page failures recorded."
     )
-    content = f"# Page Failures\n\n{table}\n"
+    content = f"""# Page Failures
+
+## Summary
+
+{summary}
+
+## Details
+
+{table}
+"""
     path = out_dir / "page_failures.md"
     atomic_write_text(path, content)
     return path
