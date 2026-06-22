@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from mimir_wiki.cache_reader import ValidationResult
+from mimir_wiki.config import AppConfig
 from mimir_wiki.schemas import (
     CandidateEntityRow,
     CandidateFactRow,
@@ -450,7 +451,9 @@ def write_attachment_followups_report(
     return path
 
 
-def write_onyx_export_risk_report(*, out_dir: Path, document_rows: list[DocumentIndexRow]) -> Path:
+def write_onyx_export_risk_report(
+    *, out_dir: Path, document_rows: list[DocumentIndexRow], config: AppConfig | None = None
+) -> Path:
     risk_rows: list[list[str]] = []
     for row in sorted(document_rows, key=onyx_export_risk_score, reverse=True):
         score = onyx_export_risk_score(row)
@@ -476,16 +479,35 @@ def write_onyx_export_risk_report(*, out_dir: Path, document_rows: list[Document
         if risk_rows
         else "No elevated Onyx export risks found."
     )
+    gate_note = onyx_risk_gate_note(document_rows, config)
     content = f"""# Onyx Export Risk
 
 Pages listed here should be reviewed before uploading enriched source Markdown to a broad
 Onyx connector.
+
+{gate_note}
 
 {table}
 """
     path = out_dir / "onyx_export_risk.md"
     atomic_write_text(path, content)
     return path
+
+
+def onyx_risk_gate_note(document_rows: list[DocumentIndexRow], config: AppConfig | None) -> str:
+    if config is None or config.onyx_poc.risk_gate_action == "off":
+        return "Risk gate: off."
+    threshold = config.onyx_poc.risk_gate_threshold
+    if threshold is None:
+        return f"Risk gate: {config.onyx_poc.risk_gate_action}, no threshold configured."
+    risky_count = sum(1 for row in document_rows if onyx_export_risk_score(row) >= threshold)
+    note = (
+        f"Risk gate: {config.onyx_poc.risk_gate_action} at threshold {threshold}; "
+        f"{risky_count} page(s) meet or exceed the threshold."
+    )
+    if config.onyx_poc.risk_gate_action == "fail" and risky_count:
+        raise ValueError(note)
+    return note
 
 
 def write_onyx_export_integrity_report(

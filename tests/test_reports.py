@@ -240,6 +240,7 @@ def test_onyx_export_risk_report_flags_restricted_content(tmp_path: Path) -> Non
     assert "customer_confidential" in content
     assert "contains_customer_case_data" in content
     assert "Public Overview" not in content
+    assert "Risk gate: off." in content
 
 
 def test_onyx_export_integrity_report_flags_and_reconciles_files(tmp_path: Path) -> None:

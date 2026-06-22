@@ -271,6 +271,57 @@ def test_onyx_markdown_replaces_stale_slug_file(tiny_cache: Path, tmp_path: Path
     assert not stale_file.exists()
 
 
+def test_onyx_export_filters_are_permissive_by_default(tiny_cache: Path, tmp_path: Path) -> None:
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    assert list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+
+
+def test_onyx_export_filters_can_exclude_configured_audiences(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text(
+        clean_path.read_text(encoding="utf-8") + "\nCustomer: Example Bank name@example.com\n",
+        encoding="utf-8",
+    )
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text(
+        text_path.read_text(encoding="utf-8") + " Customer Example Bank name@example.com",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+            "onyx_poc": {"exclude_audiences": ["restricted_internal"]},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    assert not list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+
+
 def test_performance_test_subtype_maps_unknown_to_reference(
     tiny_cache: Path, tmp_path: Path
 ) -> None:

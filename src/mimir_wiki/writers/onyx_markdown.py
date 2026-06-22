@@ -89,6 +89,23 @@ def remove_onyx_markdown_for_page(
     return removed
 
 
+def onyx_export_exclusion_reasons(enrichment: Enrichment, config: AppConfig) -> list[str]:
+    reasons: list[str] = []
+    if enrichment.audience in config.onyx_poc.exclude_audiences:
+        reasons.append(f"audience:{enrichment.audience}")
+    if enrichment.sensitivity in config.onyx_poc.exclude_sensitivities:
+        reasons.append(f"sensitivity:{enrichment.sensitivity}")
+    excluded_flags = sorted(
+        set(enrichment.review_flags) & set(config.onyx_poc.exclude_review_flags)
+    )
+    reasons.extend(f"review_flag:{flag}" for flag in excluded_flags)
+    return reasons
+
+
+def should_emit_onyx_markdown(enrichment: Enrichment, config: AppConfig) -> bool:
+    return not onyx_export_exclusion_reasons(enrichment, config)
+
+
 def display_title(title: str) -> str:
     cleaned = re.sub(r"^\s*\d+(?:\.\d+)*\.?\s+", "", title).strip()
     return cleaned or title
@@ -586,6 +603,11 @@ def write_onyx_markdown(
     generated_at: str,
     run_id: str,
 ) -> tuple[Path, list[WarningRecord]]:
+    exclusion_reasons = onyx_export_exclusion_reasons(enrichment, config)
+    if exclusion_reasons:
+        raise ValueError(
+            f"Onyx export excluded for {bundle.metadata.page_id}: {', '.join(exclusion_reasons)}"
+        )
     content, render_warnings = render_markdown(
         bundle=bundle,
         enrichment=enrichment,

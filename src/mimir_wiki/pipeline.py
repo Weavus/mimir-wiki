@@ -98,7 +98,11 @@ from mimir_wiki.writers.artifacts import (
     write_enrichment,
     write_global_jsonl,
 )
-from mimir_wiki.writers.onyx_markdown import remove_onyx_markdown_for_page, write_onyx_markdown
+from mimir_wiki.writers.onyx_markdown import (
+    remove_onyx_markdown_for_page,
+    should_emit_onyx_markdown,
+    write_onyx_markdown,
+)
 
 
 @dataclass
@@ -470,26 +474,29 @@ def _process_page(
                 and config.features.outputs.onyx_poc_markdown
                 and config.onyx_poc.emit_enriched_markdown
             ):
-                path, warning_records = write_onyx_markdown(
-                    root=onyx_root,
-                    dataset_name=dataset_name,
-                    bundle=bundle,
-                    enrichment=enrichment,
-                    config=config,
-                    generated_at=generated_at,
-                    run_id=run_id,
-                )
-                result.files_written += 1
-                result.warnings.extend(warning_records)
-                result.output_paths.append(path)
-                _artifact_event(
-                    event_callback,
-                    run_id=run_id,
-                    artifact_type="onyx_markdown",
-                    path=path,
-                    page_id=bundle.metadata.page_id,
-                    space_key=bundle.metadata.space_key,
-                )
+                if should_emit_onyx_markdown(enrichment, config):
+                    path, warning_records = write_onyx_markdown(
+                        root=onyx_root,
+                        dataset_name=dataset_name,
+                        bundle=bundle,
+                        enrichment=enrichment,
+                        config=config,
+                        generated_at=generated_at,
+                        run_id=run_id,
+                    )
+                    result.files_written += 1
+                    result.warnings.extend(warning_records)
+                    result.output_paths.append(path)
+                    _artifact_event(
+                        event_callback,
+                        run_id=run_id,
+                        artifact_type="onyx_markdown",
+                        path=path,
+                        page_id=bundle.metadata.page_id,
+                        space_key=bundle.metadata.space_key,
+                    )
+                else:
+                    remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
         result.enrichment = enrichment
         result.document_row = document_index_row(
             bundle,
@@ -660,26 +667,29 @@ async def _process_page_async(
                 and config.features.outputs.onyx_poc_markdown
                 and config.onyx_poc.emit_enriched_markdown
             ):
-                path, warning_records = write_onyx_markdown(
-                    root=onyx_root,
-                    dataset_name=dataset_name,
-                    bundle=bundle,
-                    enrichment=enrichment,
-                    config=config,
-                    generated_at=generated_at,
-                    run_id=run_id,
-                )
-                result.files_written += 1
-                result.warnings.extend(warning_records)
-                result.output_paths.append(path)
-                _artifact_event(
-                    event_callback,
-                    run_id=run_id,
-                    artifact_type="onyx_markdown",
-                    path=path,
-                    page_id=bundle.metadata.page_id,
-                    space_key=bundle.metadata.space_key,
-                )
+                if should_emit_onyx_markdown(enrichment, config):
+                    path, warning_records = write_onyx_markdown(
+                        root=onyx_root,
+                        dataset_name=dataset_name,
+                        bundle=bundle,
+                        enrichment=enrichment,
+                        config=config,
+                        generated_at=generated_at,
+                        run_id=run_id,
+                    )
+                    result.files_written += 1
+                    result.warnings.extend(warning_records)
+                    result.output_paths.append(path)
+                    _artifact_event(
+                        event_callback,
+                        run_id=run_id,
+                        artifact_type="onyx_markdown",
+                        path=path,
+                        page_id=bundle.metadata.page_id,
+                        space_key=bundle.metadata.space_key,
+                    )
+                else:
+                    remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
         result.enrichment = enrichment
         result.document_row = document_index_row(
             bundle,
@@ -2044,7 +2054,7 @@ def report_command(
             (
                 "onyx_export_risk.md",
                 lambda: write_onyx_export_risk_report(
-                    out_dir=reports_dir, document_rows=document_rows
+                    out_dir=reports_dir, document_rows=document_rows, config=config
                 ),
                 "report",
             ),
