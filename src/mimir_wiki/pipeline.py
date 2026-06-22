@@ -2123,6 +2123,7 @@ def report_command(
                     dataset_name=dataset_name,
                     document_rows=document_rows,
                     cache_pages_total=validation.pages_total,
+                    page_failures=failures,
                     reconcile=reconcile_onyx,
                 ),
                 "report",

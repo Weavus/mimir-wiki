@@ -275,10 +275,27 @@ def test_onyx_export_integrity_report_flags_and_reconciles_files(tmp_path: Path)
         dataset_name="tiny",
         document_rows=[current],
         cache_pages_total=2,
+        page_failures=[
+            PageFailure(
+                run_id="run-1",
+                dataset_name="tiny",
+                generated_at="2026-06-17T00:00:00Z",
+                document_id="confluence:SPACE:999",
+                page_id="999",
+                space_key="SPACE",
+                source_content_hash="sha256:999",
+                title="Failed page",
+                stage="enrich:llm",
+                error_type="SSLError",
+                message="ssl failed",
+            )
+        ],
     )
     content = report_path.read_text(encoding="utf-8")
     assert "| Cache pages | 2 |" in content
     assert "| Cache pages missing from document index | 1 |" in content
+    assert "## Missing Pages From Source Failures" in content
+    assert "| SPACE | 999 | enrich:llm | SSLError | Failed page |" in content
     assert "stale" in content
     assert "duplicate" in content
     assert "unparseable" in content

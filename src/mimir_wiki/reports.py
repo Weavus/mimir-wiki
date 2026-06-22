@@ -529,6 +529,7 @@ def write_onyx_export_integrity_report(
     dataset_name: str,
     document_rows: list[DocumentIndexRow],
     cache_pages_total: int | None = None,
+    page_failures: list[PageFailure] | None = None,
     reconcile: bool = False,
 ) -> Path:
     audit = audit_onyx_exports(
@@ -567,6 +568,25 @@ def write_onyx_export_integrity_report(
         if audit.removed_files
         else "No files removed."
     )
+    document_page_ids = {row.page_id for row in document_rows}
+    missing_failure_rows = [
+        [
+            failure.space_key,
+            failure.page_id,
+            failure.stage,
+            failure.error_type,
+            failure.title or "",
+        ]
+        for failure in page_failures or []
+        if failure.page_id not in document_page_ids
+    ]
+    missing_failure_table = (
+        markdown_table(
+            ["Space", "Page ID", "Stage", "Error type", "Title"], missing_failure_rows[:200]
+        )
+        if missing_failure_rows
+        else "No missing pages were linked to selected source-run failures."
+    )
     mode = "reconciled" if reconcile else "audit only"
     content = f"""# Onyx Export Integrity
 
@@ -583,6 +603,10 @@ Mode: {mode}
 ## Issues
 
 {issues}
+
+## Missing Pages From Source Failures
+
+{missing_failure_table}
 
 ## Reconciliation
 
