@@ -16,6 +16,7 @@ from mimir_wiki.schemas import (
     HierarchyContext,
     OnyxMetadata,
     OperationalSignals,
+    Quality,
 )
 from mimir_wiki.scoring import build_quality, currentness, quality_band
 from mimir_wiki.utils import (
@@ -949,6 +950,35 @@ def month_number(value: str) -> int | None:
     return lookup.get(value[:4].lower(), lookup.get(value[:3].lower()))
 
 
+def content_availability(bundle: PageBundle) -> str:
+    markdown = strip_front_matter(bundle.clean_markdown).lower()
+    if "no exportable body content" in markdown:
+        return "empty"
+    if word_count(bundle.text) < 80:
+        return "thin"
+    return "normal"
+
+
+def adjust_quality_for_content_availability(quality: Quality, availability: str) -> Quality:
+    if availability == "empty":
+        return quality.model_copy(
+            update={
+                "completeness_score": min(quality.completeness_score, 10),
+                "operational_value_score": min(quality.operational_value_score, 20),
+                "ownership_clarity_score": min(quality.ownership_clarity_score, 10),
+                "overall_score": min(quality.overall_score, 25),
+            }
+        )
+    if availability == "thin":
+        return quality.model_copy(
+            update={
+                "completeness_score": min(quality.completeness_score, 35),
+                "overall_score": min(quality.overall_score, 55),
+            }
+        )
+    return quality
+
+
 def has_linked_procedure(bundle: PageBundle) -> bool:
     if not bundle.links.links:
         return False
@@ -1135,6 +1165,9 @@ def enrich_page(
     candidates = extract_candidate_entities(bundle, keywords)
     facts = extract_candidate_facts(bundle, candidates)
     text_words = word_count(bundle.text)
+    availability = content_availability(bundle)
+    if availability == "empty" and document_type != "archive":
+        document_type = "reference"
     quality = build_quality(
         document_type=document_type,
         updated_at=bundle.metadata.updated_at,
@@ -1146,6 +1179,7 @@ def enrich_page(
         config=config.scoring,
     )
     quality = adjust_quality_for_hierarchy(quality, hierarchy)
+    quality = adjust_quality_for_content_availability(quality, availability)
     band = quality_band(quality.overall_score)
     historical, current = currentness(document_type, flags, bundle.metadata.updated_at)
     short_summary, detailed_summary = summarize(bundle, document_type, keywords)
@@ -1172,6 +1206,10 @@ def enrich_page(
         | set(missing_content_review_flags(bundle, document_type, document_subtype))
         | set(usability_review_flags(bundle))
     )
+    if availability == "empty":
+        review_flags = sorted(set(review_flags) | {"no_exportable_body_content"})
+    elif availability == "thin":
+        review_flags = sorted(set(review_flags) | {"thin_source_content"})
     for flag in review_flags:
         if flag not in warnings:
             warnings.append(flag)
@@ -1185,6 +1223,7 @@ def enrich_page(
         source_system="confluence",
         space_key=bundle.metadata.space_key,
         document_type=document_type,
+        content_availability=availability,
         quality_band=band,
         approval_status="unreviewed",
         historical=historical,
@@ -1208,6 +1247,7 @@ def enrich_page(
         document_type=document_type,
         document_type_confidence=document_type_confidence,
         document_subtype=document_subtype,
+        content_availability=availability,
         hierarchy=hierarchy,
         short_summary=short_summary,
         detailed_summary=detailed_summary,

@@ -129,6 +129,7 @@ class OnyxMetadata(BaseModel):
     space_key: str | None = None
     document_type: str | None = None
     document_subtype: str | None = None
+    content_availability: str | None = None
     quality_band: str | None = None
     approval_status: str = "unreviewed"
     historical: bool | None = None
@@ -258,6 +259,7 @@ class Enrichment(FlexibleModel):
     document_type: str
     document_type_confidence: float = Field(ge=0, le=1)
     document_subtype: str | None = None
+    content_availability: str = "normal"
     hierarchy: HierarchyContext = Field(default_factory=HierarchyContext)
     short_summary: str
     detailed_summary: str
@@ -369,6 +371,7 @@ class DocumentIndexRow(PageScopedArtifact):
     document_type: str
     document_type_confidence: float = Field(ge=0, le=1)
     document_subtype: str | None = None
+    content_availability: str = "normal"
     status_flags: list[str] = Field(default_factory=list)
     review_flags: list[str] = Field(default_factory=list)
     audience: str = "internal"

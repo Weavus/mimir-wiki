@@ -15,6 +15,7 @@ from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
 from mimir_wiki.constants import DOCUMENT_TYPES
 from mimir_wiki.enrichers.deterministic import (
+    adjust_quality_for_content_availability,
     categories_for,
     document_type_for_subtype,
     entity_bucket,
@@ -583,6 +584,9 @@ def finalize_llm_enrichment(enrichment: Enrichment, bundle: PageBundle, config: 
         config=config.scoring,
     )
     enrichment.quality = adjust_quality_for_hierarchy(enrichment.quality, enrichment.hierarchy)
+    enrichment.quality = adjust_quality_for_content_availability(
+        enrichment.quality, enrichment.content_availability
+    )
     enrichment.quality_band = quality_band(enrichment.quality.overall_score)
     enrichment.ONYX_METADATA.quality_band = enrichment.quality_band
     enrichment.ONYX_METADATA.historical = historical

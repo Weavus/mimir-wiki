@@ -538,6 +538,34 @@ def test_resource_endpoints_override_runbook(tiny_cache: Path, tmp_path: Path) -
     assert enrichment["document_subtype"] == "resource_endpoint_reference"
 
 
+def test_no_exportable_body_content_is_flagged_and_capped(tiny_cache: Path, tmp_path: Path) -> None:
+    clean_path = tiny_cache / "pages" / "123" / "clean.md"
+    clean_path.write_text("# Empty Page\n\n_No exportable body content._\n", encoding="utf-8")
+    text_path = tiny_cache / "pages" / "123" / "text.txt"
+    text_path.write_text("Empty Page No exportable body content", encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["content_availability"] == "empty"
+    assert enrichment["quality"]["overall_score"] <= 25
+    assert "no_exportable_body_content" in enrichment["review_flags"]
+    onyx_file = next((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+    assert "Content availability: `empty`" in onyx_file.read_text(encoding="utf-8")
+
+
 def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     clean_path.write_text(

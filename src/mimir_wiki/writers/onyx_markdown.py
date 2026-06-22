@@ -162,6 +162,7 @@ def render_markdown(
 
 Document type: `{enrichment.document_type}` ({enrichment.document_type_confidence:.2f})
 {document_subtype_line(enrichment)}
+Content availability: `{enrichment.content_availability}`
 Quality band: `{enrichment.quality_band}` ({enrichment.quality.overall_score}/100)
 Currentness: `{enrichment.currentness}`
 Audience: `{enrichment.audience}`
@@ -348,6 +349,7 @@ def render_key_facts(bundle: PageBundle, enrichment: Enrichment) -> str:
     facts.append(f"- Document type: {enrichment.document_type}")
     if enrichment.document_subtype:
         facts.append(f"- Document subtype: {enrichment.document_subtype}")
+    facts.append(f"- Content availability: {enrichment.content_availability}")
     facts.append(f"- Currentness: {enrichment.currentness}")
     if bundle.metadata.updated_at:
         facts.append(f"- Source updated at: {bundle.metadata.updated_at}")

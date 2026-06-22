@@ -194,7 +194,19 @@ def write_document_types_report(*, out_dir: Path, document_rows: list[DocumentIn
     counts = Counter(row.document_type for row in document_rows)
     rows = [[document_type, str(count)] for document_type, count in sorted(counts.items())]
     table = markdown_table(["Document type", "Count"], rows)
-    content = f"# Document Types\n\n{table}\n"
+    availability_counts = Counter(row.content_availability for row in document_rows)
+    availability_table = markdown_table(
+        ["Content availability", "Count"],
+        [[availability, str(count)] for availability, count in sorted(availability_counts.items())],
+    )
+    content = f"""# Document Types
+
+{table}
+
+## Content Availability
+
+{availability_table}
+"""
     path = out_dir / "document_types.md"
     atomic_write_text(path, content)
     return path
