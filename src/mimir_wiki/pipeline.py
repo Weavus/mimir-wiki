@@ -2154,6 +2154,8 @@ def report_command(
                     dataset_name=dataset_name,
                     pages=visual_pages,
                     total_pages=validation.pages_total,
+                    document_rows=document_rows,
+                    quality_rows=quality_rows,
                 ),
                 "report",
             ),

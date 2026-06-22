@@ -417,6 +417,21 @@ def test_visual_extraction_report_includes_operational_triage_sections(
         out_dir=tmp_path,
         dataset_name="tiny",
         total_pages=3,
+        document_rows=[_row("1", "Partial page", "1", "1")],
+        quality_rows=[
+            QualityScoreRow(
+                run_id="run-1",
+                dataset_name="tiny",
+                generated_at="2026-06-17T00:00:00Z",
+                document_id="confluence:SPACE:1",
+                page_id="1",
+                space_key="SPACE",
+                source_content_hash="sha256:a",
+                quality_score=90,
+                quality_band="excellent",
+                dimensions={},
+            )
+        ],
         pages=[
             VisualReportPage(
                 artifact=artifact,
@@ -440,6 +455,8 @@ def test_visual_extraction_report_includes_operational_triage_sections(
     assert "| partial | 1 |" in content
     assert "| success | 2 |" in content
     assert "| SPACE | 1 | 5 | 3 | 2 | Partial page | https://example.com/1 |" in content
+    assert "## High-Value Pages With Omitted Visuals" in content
+    assert "| 105 | SPACE | 1 | runbook |  | 90 | 5 | 3 | 2 | Partial page |" in content
     assert "invalid_image" in content
     assert "cdn.example.com" in content
     assert "| 0.42 | SPACE | 1 | image-003 | file | attachments/low.png |" in content

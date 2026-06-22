@@ -1109,18 +1109,24 @@ def write_visual_extraction_report(
     dataset_name: str,
     pages: list[VisualReportPage],
     total_pages: int | None = None,
+    document_rows: list[DocumentIndexRow] | None = None,
+    quality_rows: list[QualityScoreRow] | None = None,
     low_confidence_threshold: float = 0.75,
 ) -> Path:
     page_counts: Counter[str] = Counter(page.artifact.status for page in pages)
     image_counts: Counter[str] = Counter()
     capped_rows: list[list[str]] = []
     failed_rows: list[list[str]] = []
+    high_value_omitted_rows: list[list[str]] = []
     skipped_remote_counts: Counter[tuple[str, str, str]] = Counter()
     low_confidence_rows: list[list[str]] = []
     images_by_hash: dict[str, list[tuple[VisualReportPage, str, str]]] = defaultdict(list)
+    document_by_page_id = {row.page_id: row for row in document_rows or []}
+    quality_by_doc = {row.document_id: row.quality_score for row in quality_rows or []}
 
     for page in pages:
         artifact = page.artifact
+        document_row = document_by_page_id.get(artifact.page_id)
         image_counts.update(_visual_image_counts(artifact))
         processed_count = artifact.image_count or len(artifact.images)
         if page.discovered_image_count is not None:
@@ -1137,6 +1143,25 @@ def write_visual_extraction_report(
                         page.url or "",
                     ]
                 )
+                if document_row is not None:
+                    quality = quality_by_doc.get(document_row.document_id, 0)
+                    priority = review_queue_priority(document_row, quality)
+                    if priority >= 80 or document_row.document_type in {"runbook", "support_model"}:
+                        high_value_omitted_rows.append(
+                            [
+                                str(priority),
+                                artifact.space_key,
+                                artifact.page_id,
+                                document_row.document_type,
+                                document_row.document_subtype or "",
+                                str(quality),
+                                str(page.discovered_image_count),
+                                str(processed_count),
+                                str(omitted),
+                                page.title,
+                                page.url or "",
+                            ]
+                        )
         for image in artifact.images:
             if image.status == "failed":
                 failed_rows.append(
@@ -1172,6 +1197,7 @@ def write_visual_extraction_report(
                 images_by_hash[image.content_sha256].append((page, image.image_id, image.source))
 
     capped_rows.sort(key=lambda row: int(row[4]), reverse=True)
+    high_value_omitted_rows.sort(key=lambda row: (int(row[0]), int(row[8])), reverse=True)
     failed_rows.sort(key=lambda row: (row[0], row[1], row[2]))
     low_confidence_rows.sort(key=lambda row: float(row[0]))
     duplicate_rows = []
@@ -1209,6 +1235,26 @@ def write_visual_extraction_report(
         )
         if capped_rows
         else "No capped visual pages found."
+    )
+    high_value_omitted_table = (
+        markdown_table(
+            [
+                "Priority",
+                "Space",
+                "Page ID",
+                "Type",
+                "Subtype",
+                "Quality",
+                "Discovered",
+                "Processed",
+                "Omitted",
+                "Title",
+                "URL",
+            ],
+            high_value_omitted_rows[:100],
+        )
+        if high_value_omitted_rows
+        else "No high-value pages with omitted visual evidence found."
     )
     failed_table = (
         markdown_table(
@@ -1274,6 +1320,10 @@ Dataset: {dataset_name}
 ## Capped Pages
 
 {capped_table}
+
+## High-Value Pages With Omitted Visuals
+
+{high_value_omitted_table}
 
 ## Failed Images
 
