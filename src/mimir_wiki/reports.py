@@ -497,6 +497,7 @@ def write_visual_extraction_report(
     out_dir: Path,
     dataset_name: str,
     pages: list[VisualReportPage],
+    total_pages: int | None = None,
     low_confidence_threshold: float = 0.75,
 ) -> Path:
     page_counts: Counter[str] = Counter(page.artifact.status for page in pages)
@@ -631,9 +632,25 @@ def write_visual_extraction_report(
         if duplicate_rows
         else "No duplicate visual image hashes found."
     )
+    pages_with_artifacts = len(pages)
+    pages_without_artifacts = max(0, (total_pages or pages_with_artifacts) - pages_with_artifacts)
+    coverage_rows = [
+        ["Cache pages", str(total_pages if total_pages is not None else "unknown")],
+        ["Pages with visual artifacts", str(pages_with_artifacts)],
+        ["Pages without visual artifacts", str(pages_without_artifacts)],
+        ["Images discovered", str(sum(page.discovered_image_count or 0 for page in pages))],
+        [
+            "Images in artifacts",
+            str(sum(sum(_visual_image_counts(page.artifact).values()) for page in pages)),
+        ],
+    ]
     content = f"""# Visual Extraction
 
 Dataset: {dataset_name}
+
+## Coverage Summary
+
+{markdown_table(["Metric", "Value"], coverage_rows)}
 
 ## Page Status Counts
 

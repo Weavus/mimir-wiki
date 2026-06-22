@@ -252,6 +252,7 @@ def test_visual_extraction_report_includes_operational_triage_sections(
     path = write_visual_extraction_report(
         out_dir=tmp_path,
         dataset_name="tiny",
+        total_pages=3,
         pages=[
             VisualReportPage(
                 artifact=artifact,
@@ -269,6 +270,9 @@ def test_visual_extraction_report_includes_operational_triage_sections(
 
     content = path.read_text(encoding="utf-8")
     assert "# Visual Extraction" in content
+    assert "## Coverage Summary" in content
+    assert "| Cache pages | 3 |" in content
+    assert "| Pages without visual artifacts | 1 |" in content
     assert "| partial | 1 |" in content
     assert "| success | 2 |" in content
     assert "| SPACE | 1 | 5 | 3 | 2 | Partial page | https://example.com/1 |" in content

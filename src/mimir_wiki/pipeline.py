@@ -1993,7 +1993,10 @@ def report_command(
             (
                 "visual_extraction.md",
                 lambda: write_visual_extraction_report(
-                    out_dir=reports_dir, dataset_name=dataset_name, pages=visual_pages
+                    out_dir=reports_dir,
+                    dataset_name=dataset_name,
+                    pages=visual_pages,
+                    total_pages=validation.pages_total,
                 ),
                 "report",
             ),
