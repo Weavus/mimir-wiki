@@ -356,7 +356,8 @@ def test_entity_and_fact_quality_reports(tmp_path: Path) -> None:
 
     assert "URL/contact/ticket entities" in entity_path.read_text(encoding="utf-8")
     fact_content = fact_path.read_text(encoding="utf-8")
-    assert "Low confidence facts" in fact_content
+    assert "Evidence hints" in fact_content
+    assert "Downstream-usable facts" in fact_content
     assert "supported_by" in fact_content
 
 

@@ -666,12 +666,14 @@ def write_entity_quality_report(*, out_dir: Path, entity_rows: list[CandidateEnt
 def write_fact_quality_report(*, out_dir: Path, fact_rows: list[CandidateFactRow]) -> Path:
     predicate_counts = Counter(row.predicate for row in fact_rows)
     claim_counts = Counter(row.claim_type for row in fact_rows)
-    low_confidence = [row for row in fact_rows if row.confidence < 0.6]
+    downstream_usable = [row for row in fact_rows if row.confidence >= 0.7]
+    evidence_hints = [row for row in fact_rows if row.confidence < 0.7]
     summary = markdown_table(
         ["Metric", "Count"],
         [
             ["Candidate facts", str(len(fact_rows))],
-            ["Low confidence facts", str(len(low_confidence))],
+            ["Downstream-usable facts (confidence >= 0.70)", str(len(downstream_usable))],
+            ["Evidence hints (confidence < 0.70)", str(len(evidence_hints))],
             ["Predicates", str(len(predicate_counts))],
             ["Claim types", str(len(claim_counts))],
         ],
@@ -689,14 +691,14 @@ def write_fact_quality_report(*, out_dir: Path, fact_rows: list[CandidateFactRow
             row.subject,
             row.object,
         ]
-        for row in low_confidence[:100]
+        for row in evidence_hints[:100]
     ]
     low_table = (
         markdown_table(
             ["Space", "Page ID", "Predicate", "Confidence", "Subject", "Object"], low_rows
         )
         if low_rows
-        else "No low-confidence facts found."
+        else "No evidence hints found."
     )
     content = f"""# Fact Quality
 
@@ -708,7 +710,9 @@ def write_fact_quality_report(*, out_dir: Path, fact_rows: list[CandidateFactRow
 
 {predicates}
 
-## Low Confidence Facts
+## Evidence Hints
+
+Rows below confidence 0.70 should be treated as retrieval hints, not trusted structured facts.
 
 {low_table}
 """
