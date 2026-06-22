@@ -78,6 +78,8 @@ DOCUMENT_TYPE_ALIASES = {
     "adr": "design",
     "architecture decision record": "design",
     "architecture_decision_record": "design",
+    "business requirements": "design",
+    "business_requirements": "design",
     "faq": "knowledge_article",
     "frequently asked questions": "knowledge_article",
     "howto": "knowledge_article",
@@ -86,6 +88,8 @@ DOCUMENT_TYPE_ALIASES = {
     "installation guide": "runbook",
     "installation_guide": "runbook",
     "performance test": "reference",
+    "performance report": "reference",
+    "performance_report": "reference",
     "performance_test": "reference",
     "procedure page": "runbook",
     "procedure_page": "runbook",
@@ -95,6 +99,8 @@ DOCUMENT_TYPE_ALIASES = {
     "release-notes": "change_record",
     "release_note": "change_record",
     "release_notes": "change_record",
+    "release report": "change_record",
+    "release_report": "change_record",
     "release": "change_record",
     "requirements": "design",
     "requirement document": "design",
@@ -764,12 +770,92 @@ def parse_json_response_with_warnings(text: str) -> tuple[dict[str, Any], list[s
 
 def repair_json_text(text: str) -> str:
     repaired = text.strip()
-    start = repaired.find("{")
-    end = repaired.rfind("}")
-    if start >= 0 and end > start:
-        repaired = repaired[start : end + 1]
+    balanced = extract_balanced_json_object(repaired)
+    if balanced is not None:
+        repaired = balanced
     repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    repaired = escape_control_chars_in_json_strings(repaired)
+    repaired = close_unbalanced_json(repaired)
     return repaired
+
+
+def extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return text[start:]
+
+
+def escape_control_chars_in_json_strings(text: str) -> str:
+    chars: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            chars.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            chars.append(char)
+            in_string = not in_string
+            continue
+        if in_string and char in {"\n", "\r", "\t"}:
+            chars.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[char])
+        else:
+            chars.append(char)
+    return "".join(chars)
+
+
+def close_unbalanced_json(text: str) -> str:
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]" and stack and stack[-1] == char:
+            stack.pop()
+    if in_string:
+        text += '"'
+    return text + "".join(reversed(stack))
 
 
 def trim_payload_for_validation(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:

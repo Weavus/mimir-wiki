@@ -306,6 +306,24 @@ def test_classification_schema_normalizes_observed_aliases() -> None:
         )["document_type"]
         == "runbook"
     )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "performance_report", "confidence": 0.8}
+        )["document_type"]
+        == "reference"
+    )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "release_report", "confidence": 0.8}
+        )["document_type"]
+        == "change_record"
+    )
+    assert (
+        validate_task_payload(
+            "classification", {"document_type": "business_requirements", "confidence": 0.8}
+        )["document_type"]
+        == "design"
+    )
 
 
 def test_bundle_response_accepts_large_but_valid_evidence() -> None:
@@ -330,6 +348,22 @@ def test_llm_json_response_repairs_trailing_commas() -> None:
         '```json\n{"short_summary":"ok","detailed_summary":"details",}\n```'
     )
     assert payload["short_summary"] == "ok"
+    assert warnings == ["repaired_json"]
+
+
+def test_llm_json_response_repairs_wrapping_text_and_raw_newlines() -> None:
+    payload, warnings = parse_json_response_with_warnings(
+        'Here is JSON: {"short_summary":"ok\nline","detailed_summary":"details"} trailing'
+    )
+    assert payload["short_summary"] == "ok\nline"
+    assert warnings == ["repaired_json"]
+
+
+def test_llm_json_response_repairs_missing_closers() -> None:
+    payload, warnings = parse_json_response_with_warnings(
+        '{"keywords":["one","two",],"themes":["ops"]'
+    )
+    assert payload["keywords"] == ["one", "two"]
     assert warnings == ["repaired_json"]
 
 
