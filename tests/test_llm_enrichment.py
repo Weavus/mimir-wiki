@@ -5,7 +5,7 @@ from pathlib import Path
 
 from mimir_wiki.cache_reader import CacheReader
 from mimir_wiki.config import load_config
-from mimir_wiki.enrichers.deterministic import enrich_page
+from mimir_wiki.enrichers.deterministic import enrich_page, normalize_entity_type
 from mimir_wiki.enrichers.llm import (
     LLMWorkItem,
     apply_llm_enrichment,
@@ -349,3 +349,10 @@ def test_llm_payload_trims_oversized_fields_before_validation() -> None:
     assert len(payload["short_summary"]) == 1000
     assert len(payload["detailed_summary"]) == 6000
     assert warnings == ["trimmed_fields"]
+
+
+def test_entity_type_normalization_handles_urls_contacts_and_queues() -> None:
+    assert normalize_entity_type("AWS SQS queue", name="orders") == "queue"
+    assert normalize_entity_type("support team", name="Identity L3") == "support_group"
+    assert normalize_entity_type("external_url", name="https://example.com") == "url"
+    assert normalize_entity_type("person", name="user@example.com") == "contact"

@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from mimir_wiki.cache_reader import ValidationResult
 from mimir_wiki.schemas import (
+    CandidateEntityRow,
+    CandidateFactRow,
     DocumentIndexRow,
     Enrichment,
     LLMUsage,
@@ -544,6 +546,106 @@ Mode: {mode}
 {removed}
 """
     path = out_dir / "onyx_export_integrity.md"
+    atomic_write_text(path, content)
+    return path
+
+
+def write_entity_quality_report(*, out_dir: Path, entity_rows: list[CandidateEntityRow]) -> Path:
+    type_counts = Counter(row.entity_type for row in entity_rows)
+    noisy = [row for row in entity_rows if row.entity_type in {"url", "contact", "ticket"}]
+    low_confidence = [row for row in entity_rows if row.confidence < 0.5]
+    summary = markdown_table(
+        ["Metric", "Count"],
+        [
+            ["Candidate entities", str(len(entity_rows))],
+            ["URL/contact/ticket entities", str(len(noisy))],
+            ["Low confidence entities", str(len(low_confidence))],
+        ],
+    )
+    by_type = markdown_table(
+        ["Entity type", "Count"],
+        [[entity_type, str(count)] for entity_type, count in sorted(type_counts.items())],
+    )
+    noisy_rows = [
+        [row.entity_type, row.name, str(row.document_count), f"{row.confidence:.2f}"]
+        for row in sorted(noisy + low_confidence, key=lambda item: (item.entity_type, item.name))[
+            :100
+        ]
+    ]
+    noisy_table = (
+        markdown_table(["Type", "Name", "Documents", "Confidence"], noisy_rows)
+        if noisy_rows
+        else "No noisy or low-confidence candidate entities found."
+    )
+    content = f"""# Entity Quality
+
+## Summary
+
+{summary}
+
+## Entity Types
+
+{by_type}
+
+## Follow-Up Candidates
+
+{noisy_table}
+"""
+    path = out_dir / "entity_quality.md"
+    atomic_write_text(path, content)
+    return path
+
+
+def write_fact_quality_report(*, out_dir: Path, fact_rows: list[CandidateFactRow]) -> Path:
+    predicate_counts = Counter(row.predicate for row in fact_rows)
+    claim_counts = Counter(row.claim_type for row in fact_rows)
+    low_confidence = [row for row in fact_rows if row.confidence < 0.6]
+    summary = markdown_table(
+        ["Metric", "Count"],
+        [
+            ["Candidate facts", str(len(fact_rows))],
+            ["Low confidence facts", str(len(low_confidence))],
+            ["Predicates", str(len(predicate_counts))],
+            ["Claim types", str(len(claim_counts))],
+        ],
+    )
+    predicates = markdown_table(
+        ["Predicate", "Count"],
+        [[predicate, str(count)] for predicate, count in predicate_counts.most_common(50)],
+    )
+    low_rows = [
+        [
+            row.space_key,
+            row.page_id,
+            row.predicate,
+            f"{row.confidence:.2f}",
+            row.subject,
+            row.object,
+        ]
+        for row in low_confidence[:100]
+    ]
+    low_table = (
+        markdown_table(
+            ["Space", "Page ID", "Predicate", "Confidence", "Subject", "Object"], low_rows
+        )
+        if low_rows
+        else "No low-confidence facts found."
+    )
+    content = f"""# Fact Quality
+
+## Summary
+
+{summary}
+
+## Predicate Counts
+
+{predicates}
+
+## Low Confidence Facts
+
+{low_table}
+"""
+    path = out_dir / "fact_quality.md"
     atomic_write_text(path, content)
     return path
 

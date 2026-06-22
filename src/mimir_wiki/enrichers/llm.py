@@ -22,6 +22,7 @@ from mimir_wiki.enrichers.deterministic import (
     has_linked_procedure,
     infer_document_subtype,
     is_procedural_runbook,
+    normalize_entity_type,
     warnings_for,
 )
 from mimir_wiki.hierarchy import adjust_quality_for_hierarchy
@@ -945,7 +946,9 @@ def merge_task_payload(
                     continue
                 name = raw["name"].strip()[:120]
                 normalized = normalize_term(name)
-                entity_type = str(raw.get("entity_type") or "technology")
+                entity_type = normalize_entity_type(
+                    str(raw.get("entity_type") or "technology"), name=name
+                )
                 key = (entity_type, normalized)
                 if not normalized or key in seen:
                     continue

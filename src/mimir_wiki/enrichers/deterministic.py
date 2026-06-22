@@ -141,6 +141,7 @@ GENERIC_TAXONOMY_TERMS = GENERIC_ENTITY_TERMS | {
 }
 SHORT_TAXONOMY_ALLOWLIST = {"dev", "qa", "ppe", "prod", "k6", "uat", "dr"}
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+URL_PATTERN = re.compile(r"^https?://", flags=re.IGNORECASE)
 INTERNAL_EMAIL_DOMAINS = (
     "lseg.com",
     "refinitiv.com",
@@ -236,6 +237,41 @@ ENTITY_TYPE_HINTS: dict[str, list[str]] = {
     "queue": ["kafka", "rabbitmq", "mq", "sqs", "queue"],
     "dashboard": ["grafana", "splunk", "kibana", "datadog", "dashboard"],
     "technology": ["aws", "azure", "kubernetes", "linux", "windows", "tomcat", "websphere"],
+}
+ENTITY_TYPE_ALIASES = {
+    "aws sqs queue": "queue",
+    "email": "contact",
+    "email_address": "contact",
+    "external_url": "url",
+    "group": "support_group",
+    "jira": "ticket",
+    "link": "url",
+    "servicenow": "ticket",
+    "support team": "support_group",
+    "support_group": "support_group",
+    "url": "url",
+}
+ALLOWED_ENTITY_TYPES = {
+    "api",
+    "application",
+    "change_record",
+    "contact",
+    "dashboard",
+    "database",
+    "environment",
+    "incident",
+    "person",
+    "platform",
+    "queue",
+    "region",
+    "runbook",
+    "server",
+    "service",
+    "support_group",
+    "team",
+    "technology",
+    "ticket",
+    "url",
 }
 
 
@@ -375,15 +411,39 @@ def detect_operational_signals(bundle: PageBundle) -> OperationalSignals:
 
 def infer_entity_type(name: str, source_field: str) -> str:
     normalized = normalize_term(name)
+    if URL_PATTERN.match(name.strip()):
+        return "url"
+    if EMAIL_PATTERN.fullmatch(name.strip()):
+        return "contact"
     for entity_type, hints in ENTITY_TYPE_HINTS.items():
         if any(hint in normalized for hint in hints):
-            return entity_type
+            return normalize_entity_type(entity_type, name=name)
     if re.search(r"\b[A-Z]{2,}[A-Z0-9-]*\b", name) and source_field == "title":
         return "application"
     if any(marker in normalized for marker in ("team", "support", "sre", "l2", "l3")):
         return "support_group"
     if re.search(r"\b(INC|CHG|RITM|DOC)-?\d+\b", name, flags=re.IGNORECASE):
         return "incident" if "inc" in normalized else "change_record"
+    return "technology"
+
+
+def normalize_entity_type(entity_type: str, *, name: str = "") -> str:
+    normalized = normalize_term(entity_type).replace(" ", "_")
+    alias = ENTITY_TYPE_ALIASES.get(normalized) or ENTITY_TYPE_ALIASES.get(
+        normalize_term(entity_type)
+    )
+    if alias:
+        return alias
+    if name and URL_PATTERN.match(name.strip()):
+        return "url"
+    if name and EMAIL_PATTERN.fullmatch(name.strip()):
+        return "contact"
+    if normalized.endswith("_queue") or "queue" in normalized:
+        return "queue"
+    if normalized.endswith("_team"):
+        return "team"
+    if normalized in ALLOWED_ENTITY_TYPES:
+        return normalized
     return "technology"
 
 
@@ -409,7 +469,7 @@ def extract_candidate_entities(bundle: PageBundle, keywords: list[str]) -> list[
             continue
         if source_field == "keyword" and len(normalized.split()) == 1:
             continue
-        entity_type = infer_entity_type(name, source_field)
+        entity_type = normalize_entity_type(infer_entity_type(name, source_field), name=name)
         key = (entity_type, normalized)
         mention = CandidateMention(
             document_id=bundle.document_id,

@@ -4,6 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from mimir_wiki.cache_reader import PageBundle
+from mimir_wiki.enrichers.deterministic import normalize_entity_type
 from mimir_wiki.schemas import (
     CandidateEntityRow,
     CandidateFactRow,
@@ -241,19 +242,18 @@ def aggregate_candidate_entity_rows(
     confidence_totals: dict[tuple[str, str], list[float]] = defaultdict(list)
     for enrichment in enrichments:
         for entity in enrichment.candidate_entities:
-            key = (entity.entity_type, entity.normalized_name)
+            entity_type = normalize_entity_type(entity.entity_type, name=entity.name)
+            key = (entity_type, entity.normalized_name)
             document_sets[key].add(enrichment.document_id)
             confidence_totals[key].append(entity.confidence)
             if key not in grouped:
                 grouped[key] = CandidateEntityRow(
                     run_id=run_id,
                     dataset_name=dataset_name,
-                    entity_id=(
-                        f"candidate:{entity.entity_type}:{slugify(entity.normalized_name, 120)}"
-                    ),
+                    entity_id=(f"candidate:{entity_type}:{slugify(entity.normalized_name, 120)}"),
                     name=entity.name,
                     normalized_name=entity.normalized_name,
-                    entity_type=entity.entity_type,
+                    entity_type=entity_type,
                     aliases=entity.aliases,
                     document_count=0,
                     mentions=[],

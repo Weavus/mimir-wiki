@@ -37,6 +37,8 @@ from mimir_wiki.reports import (
     write_duplicate_candidates_report,
     write_enrichment_reports,
     write_enrichment_summary,
+    write_entity_quality_report,
+    write_fact_quality_report,
     write_high_value_sources_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
@@ -49,6 +51,8 @@ from mimir_wiki.reports import (
     write_visual_extraction_report,
 )
 from mimir_wiki.schemas import (
+    CandidateEntityRow,
+    CandidateFactRow,
     DocumentIndexRow,
     Enrichment,
     HierarchyContext,
@@ -794,6 +798,8 @@ def enrich_command(
     enrichments: list[Enrichment] = []
     document_rows: list[DocumentIndexRow] = []
     quality_rows: list[QualityScoreRow] = []
+    entity_rows: list[CandidateEntityRow] = []
+    fact_rows: list[CandidateFactRow] = []
     visual_rows: list[VisualIndexRow] = []
     processed = 0
     skipped = 0
@@ -1755,6 +1761,14 @@ def _read_quality_rows(path: Path) -> list[QualityScoreRow]:
     return [QualityScoreRow.model_validate(row) for row in load_jsonl(path)]
 
 
+def _read_candidate_entity_rows(path: Path) -> list[CandidateEntityRow]:
+    return [CandidateEntityRow.model_validate(row) for row in load_jsonl(path)]
+
+
+def _read_candidate_fact_rows(path: Path) -> list[CandidateFactRow]:
+    return [CandidateFactRow.model_validate(row) for row in load_jsonl(path)]
+
+
 def _same_cache_path(left: str | None, right: Path) -> bool:
     if not left:
         return False
@@ -1902,7 +1916,7 @@ def report_command(
     failures: list[PageFailure] = []
     source_run_summaries: list[RunSummary] = []
 
-    reports_planned = 15
+    reports_planned = 17
     reports_written = 0
 
     def emit_progress(current_report: str = "-") -> None:
@@ -1916,6 +1930,8 @@ def report_command(
                 "document_rows": len(document_rows),
                 "enrichments": len(enrichments),
                 "visual_artifacts": len(visual_pages),
+                "entity_rows": len(entity_rows),
+                "fact_rows": len(fact_rows),
                 "warnings": sum(1 for issue in validation.issues if issue.level == "warning"),
                 "failures": validation.pages_failed + len(failures),
                 "source_runs": len(source_run_summaries),
@@ -1926,9 +1942,15 @@ def report_command(
     emit_progress("loading inputs")
     document_index = knowledge_dir / "document_index.jsonl"
     quality_scores = knowledge_dir / "quality_scores.jsonl"
+    candidate_entities = knowledge_dir / "candidate_entities.jsonl"
+    candidate_facts = knowledge_dir / "facts.jsonl"
     if document_index.exists() and quality_scores.exists():
         document_rows = _read_document_rows(document_index)
         quality_rows = _read_quality_rows(quality_scores)
+    if candidate_entities.exists():
+        entity_rows = _read_candidate_entity_rows(candidate_entities)
+    if candidate_facts.exists():
+        fact_rows = _read_candidate_fact_rows(candidate_facts)
     enrichments = _read_enrichments(reader, limit)
     visual_pages = _visual_report_pages(reader.iter_pages(limit=limit))
     runs_root = Path(config.paths.runs)
@@ -2033,6 +2055,16 @@ def report_command(
                     document_rows=document_rows,
                     reconcile=reconcile_onyx,
                 ),
+                "report",
+            ),
+            (
+                "entity_quality.md",
+                lambda: write_entity_quality_report(out_dir=reports_dir, entity_rows=entity_rows),
+                "report",
+            ),
+            (
+                "fact_quality.md",
+                lambda: write_fact_quality_report(out_dir=reports_dir, fact_rows=fact_rows),
                 "report",
             ),
             (

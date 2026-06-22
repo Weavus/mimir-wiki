@@ -6,6 +6,8 @@ from mimir_wiki.reports import (
     VisualReportPage,
     audit_onyx_exports,
     write_duplicate_candidates_report,
+    write_entity_quality_report,
+    write_fact_quality_report,
     write_high_value_sources_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
@@ -16,6 +18,9 @@ from mimir_wiki.reports import (
     write_visual_extraction_report,
 )
 from mimir_wiki.schemas import (
+    CandidateEntityRow,
+    CandidateFactRow,
+    CandidateMention,
     DocumentIndexRow,
     Enrichment,
     EnrichmentSignature,
@@ -269,6 +274,54 @@ def test_onyx_export_integrity_report_flags_and_reconciles_files(tmp_path: Path)
     assert len(audit.duplicate_files) == 1
     assert not stale.exists()
     assert sum(path.exists() for path in (keep, duplicate)) == 1
+
+
+def test_entity_and_fact_quality_reports(tmp_path: Path) -> None:
+    entity = CandidateEntityRow(
+        run_id="run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        entity_id="candidate:url:example",
+        name="https://example.com",
+        normalized_name="https example com",
+        entity_type="url",
+        document_count=1,
+        mentions=[
+            CandidateMention(
+                document_id="confluence:SPACE:1",
+                page_id="1",
+                evidence="https://example.com",
+                source_field="link_text",
+            )
+        ],
+        confidence=0.4,
+        method="deterministic",
+    )
+    fact = CandidateFactRow(
+        run_id="run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        document_id="confluence:SPACE:1",
+        page_id="1",
+        space_key="SPACE",
+        source_content_hash="sha256:a",
+        fact_id="fact:1",
+        subject="App",
+        predicate="supported_by",
+        claim_type="support_model",
+        object="Team",
+        evidence_text="Support group: Team",
+        confidence=0.45,
+        extraction_method="deterministic",
+    )
+
+    entity_path = write_entity_quality_report(out_dir=tmp_path, entity_rows=[entity])
+    fact_path = write_fact_quality_report(out_dir=tmp_path, fact_rows=[fact])
+
+    assert "URL/contact/ticket entities" in entity_path.read_text(encoding="utf-8")
+    fact_content = fact_path.read_text(encoding="utf-8")
+    assert "Low confidence facts" in fact_content
+    assert "supported_by" in fact_content
 
 
 def test_visual_extraction_report_includes_operational_triage_sections(
