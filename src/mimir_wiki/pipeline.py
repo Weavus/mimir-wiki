@@ -91,7 +91,7 @@ from mimir_wiki.writers.artifacts import (
     write_enrichment,
     write_global_jsonl,
 )
-from mimir_wiki.writers.onyx_markdown import write_onyx_markdown
+from mimir_wiki.writers.onyx_markdown import remove_onyx_markdown_for_page, write_onyx_markdown
 
 
 @dataclass
@@ -410,6 +410,13 @@ def _process_page(
             )
             result.skipped = 1
         else:
+            if (
+                not dry_run
+                and document_type_filter is None
+                and config.features.outputs.onyx_poc_markdown
+                and config.onyx_poc.emit_enriched_markdown
+            ):
+                remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
             enrichment = enrich_page(
                 bundle,
                 run_id=run_id,
@@ -592,6 +599,13 @@ async def _process_page_async(
             )
             result.skipped = 1
         else:
+            if (
+                not dry_run
+                and document_type_filter is None
+                and config.features.outputs.onyx_poc_markdown
+                and config.onyx_poc.emit_enriched_markdown
+            ):
+                remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
             enrichment = enrich_page(
                 bundle,
                 run_id=run_id,

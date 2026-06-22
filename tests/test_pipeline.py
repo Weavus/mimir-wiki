@@ -227,6 +227,33 @@ def test_onyx_markdown_strips_outline_number_from_display_title(
     assert "- Original source title: 1.1.1 Database information" in content
 
 
+def test_onyx_markdown_replaces_stale_slug_file(tiny_cache: Path, tmp_path: Path) -> None:
+    out_root = tmp_path / "dist" / "onyx-enriched"
+    stale_dir = out_root / "tiny" / "IDENTITY"
+    stale_dir.mkdir(parents=True)
+    stale_file = stale_dir / "123-old-title.md"
+    stale_file.write_text("stale", encoding="utf-8")
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(out_root),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    onyx_files = sorted(stale_dir.glob("123-*.md"))
+    assert len(onyx_files) == 1
+    assert onyx_files[0].name == "123-forgerock-support-runbook.md"
+    assert not stale_file.exists()
+
+
 def test_performance_test_subtype_maps_unknown_to_reference(
     tiny_cache: Path, tmp_path: Path
 ) -> None:

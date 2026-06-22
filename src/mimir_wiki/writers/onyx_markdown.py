@@ -68,6 +68,27 @@ def onyx_output_path(root: Path, dataset_name: str, bundle: PageBundle, config: 
     return root / dataset_name / bundle.metadata.space_key / f"{bundle.metadata.page_id}-{slug}.md"
 
 
+def remove_onyx_markdown_for_page(
+    root: Path,
+    dataset_name: str,
+    bundle: PageBundle,
+    config: AppConfig,
+    *,
+    keep_path: Path | None = None,
+) -> int:
+    directory = root / dataset_name / bundle.metadata.space_key
+    if not directory.exists():
+        return 0
+    removed = 0
+    keep_resolved = keep_path.resolve(strict=False) if keep_path is not None else None
+    for path in directory.glob(f"{bundle.metadata.page_id}-*.md"):
+        if keep_resolved is not None and path.resolve(strict=False) == keep_resolved:
+            continue
+        path.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
 def display_title(title: str) -> str:
     cleaned = re.sub(r"^\s*\d+(?:\.\d+)*\.?\s+", "", title).strip()
     return cleaned or title
@@ -579,6 +600,7 @@ def write_onyx_markdown(
             f"{bundle.metadata.page_id}: {', '.join(redaction_warnings)}"
         )
     path = onyx_output_path(root, dataset_name, bundle, config)
+    remove_onyx_markdown_for_page(root, dataset_name, bundle, config, keep_path=path)
     atomic_write_text(path, content)
     warning_records = [
         WarningRecord(
