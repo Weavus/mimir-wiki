@@ -866,7 +866,8 @@ def write_duplicate_candidates_report(
                 "Environments",
                 "Regions",
                 "Count",
-                "Recommended keeper",
+                "Canonical candidate",
+                "Latest member",
                 "Documents",
             ],
             cluster_rows[:100],
@@ -909,16 +910,18 @@ def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[s
             continue
         seen_clusters.add(doc_keys)
         keeper = recommended_duplicate_keeper(group)
+        latest = latest_duplicate_member(group)
         family = duplicate_family_metadata(group)
         rows.append(
             [
-                key[:80],
+                duplicate_family_label(key, group),
                 family["family_type"] if reason == "near_title_family" else reason,
                 family["versions"],
                 family["environments"],
                 family["regions"],
                 str(len(group)),
                 f"{keeper.space_key}:{keeper.page_id} {keeper.title}",
+                f"{latest.space_key}:{latest.page_id} {latest.title}",
                 ", ".join(doc_keys[:20]),
             ]
         )
@@ -1049,6 +1052,30 @@ def recommended_duplicate_keeper(group: list[DocumentIndexRow]) -> DocumentIndex
         ),
         reverse=True,
     )[0]
+
+
+def latest_duplicate_member(group: list[DocumentIndexRow]) -> DocumentIndexRow:
+    return sorted(group, key=lambda row: (row.source_updated_at or "", row.page_id), reverse=True)[
+        0
+    ]
+
+
+def duplicate_family_label(key: str, group: list[DocumentIndexRow]) -> str:
+    key_lower = key.lower()
+    titles = " ".join(row.title.lower() for row in group)
+    combined = f"{key_lower} {titles}"
+    if "ip whitelisting" in combined or "ip whitelist" in combined:
+        return "IP Whitelisting installation guides"
+    if "account linking service" in combined:
+        return "Account Linking Service installation guides"
+    if "scim admin" in combined:
+        return "SCIM Admin API document family"
+    if "scim api" in combined or "api guide installation scim" in combined:
+        return "SCIM API installation guides"
+    if "iam scim" in combined:
+        return "IAM SCIM API document family"
+    words = [word for word in key.split() if not word.isdigit()]
+    return " ".join(words).title()[:80] or group[0].title[:80]
 
 
 def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
