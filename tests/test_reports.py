@@ -81,6 +81,20 @@ def test_duplicate_report_includes_cluster_recommendation(tmp_path: Path) -> Non
     assert "SPACE:1" in content
 
 
+def test_duplicate_report_clusters_near_title_families(tmp_path: Path) -> None:
+    path = write_duplicate_candidates_report(
+        out_dir=tmp_path,
+        document_rows=[
+            _row("1", "PPE SCIM API 1.1.0 Installation Guide", "1", "1"),
+            _row("2", "PPE SCIM API 1.2.0 Installation Guide", "2", "2"),
+            _row("3", "PPE SCIM API 1.3.0 Installation Guide", "3", "3"),
+        ],
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "near_title_family" in content
+    assert "SPACE:1, SPACE:2, SPACE:3" in content
+
+
 def test_review_queue_report_prioritizes_manual_review(tmp_path: Path) -> None:
     row = _row("1", "Restricted Runbook", "0000000000000001", "0000000000000001")
     row.review_flags = ["manual_review_required", "visual_content_missing"]

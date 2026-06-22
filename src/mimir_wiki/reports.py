@@ -812,6 +812,8 @@ def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[s
         normalized_title = normalize_term(row.title)
         if normalized_title:
             groups[("normalized_title", normalized_title)].append(row)
+    for key, group in near_title_clusters(document_rows).items():
+        groups[("near_title_family", key)].extend(group)
     rows: list[list[str]] = []
     seen_clusters: set[tuple[str, ...]] = set()
     for (reason, key), group in sorted(groups.items()):
@@ -832,6 +834,52 @@ def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[s
             ]
         )
     return rows
+
+
+def near_title_clusters(document_rows: list[DocumentIndexRow]) -> dict[str, list[DocumentIndexRow]]:
+    parent = list(range(len(document_rows)))
+    title_tokens = [(row, set(normalize_term(row.title).split())) for row in document_rows]
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left_index, (_, left_tokens) in enumerate(title_tokens):
+        if len(left_tokens) < 3:
+            continue
+        for right_index in range(left_index + 1, len(title_tokens)):
+            right_tokens = title_tokens[right_index][1]
+            if len(right_tokens) < 3:
+                continue
+            similarity = len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+            if similarity >= 0.8:
+                union(left_index, right_index)
+    grouped: dict[int, list[DocumentIndexRow]] = defaultdict(list)
+    for index, (row, _) in enumerate(title_tokens):
+        grouped[find(index)].append(row)
+    clusters: dict[str, list[DocumentIndexRow]] = {}
+    for group in grouped.values():
+        if len(group) < 3:
+            continue
+        key = common_title_cluster_key(group)
+        clusters[key] = sorted(group, key=lambda row: (row.space_key, row.page_id))
+    return clusters
+
+
+def common_title_cluster_key(group: list[DocumentIndexRow]) -> str:
+    token_sets = [set(normalize_term(row.title).split()) for row in group]
+    common = set.intersection(*token_sets) if token_sets else set()
+    if common:
+        return " ".join(sorted(common))[:80]
+    return normalize_term(group[0].title)[:80]
 
 
 def recommended_duplicate_keeper(group: list[DocumentIndexRow]) -> DocumentIndexRow:
