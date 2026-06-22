@@ -286,6 +286,16 @@ def classify_document(bundle: PageBundle) -> tuple[str, float]:
     ).lower()
     title = bundle.metadata.title.lower()
     title_and_path = f"{title}\n{' '.join(bundle.ancestor_titles).lower()}"
+    if any(term in title_and_path for term in ("video library", "script library")):
+        return "reference", 0.88
+    if any(term in title for term in ("resources & endpoints", "resources and endpoints")):
+        return "reference", 0.86
+    if any(term in title for term in ("game day record", "gameday record")):
+        return "reference", 0.86
+    if "service level metrics" in title or "service checks" in title:
+        return "support_model", 0.84
+    if any(term in title for term in ("cost optimization review", "cost optimization tool review")):
+        return "reference", 0.84
     if any(term in title_and_path for term in ("daily handover", "handover")):
         return "meeting_notes", 0.9
     if "service review" in title_and_path and "meeting" in title_and_path:
@@ -999,6 +1009,15 @@ def is_procedural_runbook(bundle: PageBundle) -> bool:
 def infer_document_subtype(bundle: PageBundle, document_type: str) -> str | None:
     text = f"{bundle.metadata.title}\n{' '.join(bundle.ancestor_titles)}".lower()
     subtype_rules = [
+        ("video_library", ("video library",)),
+        ("script_library", ("script library",)),
+        ("resource_endpoint_reference", ("resources & endpoints", "resources and endpoints")),
+        ("service_metric_page", ("service level metrics", "service checks")),
+        ("dashboard_catalog", ("all available alarms", "datadog monitors", "cloudwatch alarms")),
+        ("test_standard", ("test standard and dr", "test standard")),
+        ("game_day_record", ("game day record", "gameday record")),
+        ("operational_acceptance_test", ("game day", "operational acceptance testing")),
+        ("cost_review", ("cost optimization review", "cost optimization tool review")),
         ("daily_handover", ("daily handover", "handover")),
         ("service_review_notes", ("service review meeting", "service review notes")),
         ("release_instance", ("release notes", "release report", "release plan")),
@@ -1038,17 +1057,28 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
         return document_type
     strong_subtype_type_map = {
         "api_specification": "reference",
+        "business_overview": "design",
+        "cost_review": "reference",
         "daily_handover": "meeting_notes",
+        "dashboard_catalog": "reference",
         "dr_test_plan": "project_plan",
+        "game_day_record": "reference",
         "integration_path": "onboarding",
         "operational_log": "reference",
+        "operational_acceptance_test": "reference",
         "operational_monitor": "reference",
         "performance_test_report": "reference",
         "question_log": "reference",
         "release_instance": "change_record",
         "release_report": "change_record",
+        "resource_endpoint_reference": "reference",
         "scenario_catalog": "reference",
+        "script_library": "reference",
+        "service_metric_page": "support_model",
         "service_review_notes": "meeting_notes",
+        "technical_design": "design",
+        "test_standard": "reference",
+        "video_library": "reference",
     }
     if document_subtype in strong_subtype_type_map:
         return strong_subtype_type_map[document_subtype]
@@ -1057,21 +1087,30 @@ def document_type_for_subtype(document_type: str, document_subtype: str | None) 
     subtype_type_map = {
         "api_specification": "reference",
         "business_overview": "reference",
+        "cost_review": "reference",
         "database_information": "reference",
         "daily_handover": "meeting_notes",
+        "dashboard_catalog": "reference",
         "dr_test_plan": "project_plan",
         "faq": "knowledge_article",
+        "game_day_record": "reference",
         "integration_path": "onboarding",
         "operational_log": "reference",
+        "operational_acceptance_test": "reference",
         "operational_monitor": "reference",
         "performance_test_report": "reference",
         "question_log": "reference",
+        "resource_endpoint_reference": "reference",
         "release_instance": "change_record",
         "release_report": "change_record",
         "scenario_catalog": "reference",
+        "script_library": "reference",
+        "service_metric_page": "support_model",
         "service_review_notes": "meeting_notes",
         "technical_document": "reference",
         "technical_design": "design",
+        "test_standard": "reference",
+        "video_library": "reference",
     }
     return subtype_type_map.get(document_subtype, document_type)
 

@@ -478,6 +478,66 @@ def test_service_review_classifies_as_meeting_notes(tiny_cache: Path, tmp_path: 
     assert enrichment["document_subtype"] == "service_review_notes"
 
 
+def test_video_library_classifies_as_reference(tiny_cache: Path, tmp_path: Path) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "Entra Video Library"
+    metadata["labels"] = []
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (tiny_cache / "pages" / "123" / "text.txt").write_text(
+        "Video library script customer introduction troubleshooting support",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["document_type"] == "reference"
+    assert enrichment["document_subtype"] == "video_library"
+
+
+def test_resource_endpoints_override_runbook(tiny_cache: Path, tmp_path: Path) -> None:
+    metadata_path = tiny_cache / "pages" / "123" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["title"] = "IAM SCIM API 1.1.0 Resources & Endpoints"
+    metadata["labels"] = []
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    (tiny_cache / "pages" / "123" / "text.txt").write_text(
+        "Resources endpoints support group check health api list",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    enrichment = json.loads((tiny_cache / "pages" / "123" / "enrichment.json").read_text())
+    assert enrichment["document_type"] == "reference"
+    assert enrichment["document_subtype"] == "resource_endpoint_reference"
+
+
 def test_onyx_limits_early_links_and_rewrites_images(tiny_cache: Path, tmp_path: Path) -> None:
     clean_path = tiny_cache / "pages" / "123" / "clean.md"
     clean_path.write_text(
