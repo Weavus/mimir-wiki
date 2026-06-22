@@ -458,6 +458,8 @@ class PageFailure(PageScopedArtifact):
     retryable: bool = False
     attempts: int = 1
     suggested_action: str | None = None
+    error_context: dict[str, Any] = Field(default_factory=dict)
+    traceback: str | None = None
 
 
 class WarningRecord(CommonArtifact):

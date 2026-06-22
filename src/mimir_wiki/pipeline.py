@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -170,6 +171,8 @@ class RunContext:
         retryable: bool = False,
         attempts: int = 1,
         suggested_action: str | None = None,
+        error_context: dict[str, Any] | None = None,
+        traceback_text: str | None = None,
     ) -> None:
         self.failures.append(
             PageFailure(
@@ -188,6 +191,8 @@ class RunContext:
                 retryable=retryable,
                 attempts=attempts,
                 suggested_action=suggested_action,
+                error_context=error_context or {},
+                traceback=traceback_text,
             )
         )
 
@@ -374,6 +379,37 @@ def _load_existing_enrichment(path: Path) -> Enrichment | None:
         return None
 
 
+def page_failure_from_exception(
+    *,
+    exc: Exception,
+    bundle: PageBundle,
+    run_id: str,
+    dataset_name: str,
+    stage: str,
+    config: AppConfig,
+    suggested_action: str,
+    error_context: dict[str, Any] | None = None,
+) -> PageFailure:
+    return PageFailure(
+        run_id=run_id,
+        dataset_name=dataset_name,
+        generated_at=utc_now(),
+        document_id=bundle.document_id,
+        page_id=bundle.metadata.page_id,
+        space_key=bundle.metadata.space_key,
+        title=bundle.metadata.title,
+        source_updated_at=bundle.metadata.updated_at,
+        source_content_hash=bundle.source_content_hash,
+        stage=stage,
+        error_type=type(exc).__name__,
+        message=str(exc),
+        retryable=False,
+        suggested_action=suggested_action,
+        error_context=error_context or {},
+        traceback="".join(traceback.format_exception(exc)) if config.cli.show_tracebacks else None,
+    )
+
+
 def _process_page(
     *,
     bundle: PageBundle,
@@ -403,7 +439,9 @@ def _process_page(
                 "title": bundle.metadata.title,
             }
         )
+    current_stage = "enrich:load_existing"
     try:
+        current_stage = "enrich:load_existing"
         existing = _load_existing_enrichment(enrichment_path)
         unchanged = (
             changed_only
@@ -421,6 +459,7 @@ def _process_page(
             )
             result.skipped = 1
         else:
+            current_stage = "enrich:remove_existing_onyx"
             if (
                 not dry_run
                 and document_type_filter is None
@@ -428,6 +467,7 @@ def _process_page(
                 and config.onyx_poc.emit_enriched_markdown
             ):
                 remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
+            current_stage = "enrich:deterministic"
             enrichment = enrich_page(
                 bundle,
                 run_id=run_id,
@@ -437,6 +477,7 @@ def _process_page(
                 hierarchy=hierarchy,
             )
             if provider is not None:
+                current_stage = "enrich:llm"
                 llm_result = apply_llm_enrichment(
                     bundle=bundle,
                     enrichment=enrichment,
@@ -458,6 +499,7 @@ def _process_page(
                 return result
             result.processed = 1
             if not dry_run and config.features.outputs.enrichment_json:
+                current_stage = "enrich:write_enrichment_json"
                 write_enrichment(enrichment_path, enrichment)
                 result.files_written += 1
                 result.output_paths.append(enrichment_path)
@@ -475,6 +517,7 @@ def _process_page(
                 and config.onyx_poc.emit_enriched_markdown
             ):
                 if should_emit_onyx_markdown(enrichment, config):
+                    current_stage = "enrich:write_onyx_markdown"
                     path, warning_records = write_onyx_markdown(
                         root=onyx_root,
                         dataset_name=dataset_name,
@@ -496,8 +539,10 @@ def _process_page(
                         space_key=bundle.metadata.space_key,
                     )
                 else:
+                    current_stage = "enrich:remove_filtered_onyx"
                     remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
         result.enrichment = enrichment
+        current_stage = "enrich:build_document_index"
         result.document_row = document_index_row(
             bundle,
             enrichment,
@@ -533,21 +578,22 @@ def _process_page(
                 }
             )
     except Exception as exc:
-        failure = PageFailure(
+        failure = page_failure_from_exception(
+            exc=exc,
+            bundle=bundle,
             run_id=run_id,
             dataset_name=dataset_name,
-            generated_at=utc_now(),
-            document_id=bundle.document_id,
-            page_id=bundle.metadata.page_id,
-            space_key=bundle.metadata.space_key,
-            title=bundle.metadata.title,
-            source_updated_at=bundle.metadata.updated_at,
-            source_content_hash=bundle.source_content_hash,
-            stage="enrich",
-            error_type=type(exc).__name__,
-            message=str(exc),
-            retryable=False,
+            stage=current_stage,
+            config=config,
             suggested_action="Inspect the source page artifact and rerun this page.",
+            error_context={
+                "enrichment_path": str(enrichment_path),
+                "onyx_root": str(onyx_root),
+                "provider": getattr(provider, "name", None) if provider is not None else None,
+                "document_type_filter": document_type_filter,
+                "changed_only": changed_only,
+                "force": force,
+            },
         )
         result.failures.append(failure)
         if event_callback:
@@ -595,7 +641,9 @@ async def _process_page_async(
                 "title": bundle.metadata.title,
             }
         )
+    current_stage = "enrich:load_existing"
     try:
+        current_stage = "enrich:load_existing"
         existing = _load_existing_enrichment(enrichment_path)
         unchanged = (
             changed_only
@@ -613,6 +661,7 @@ async def _process_page_async(
             )
             result.skipped = 1
         else:
+            current_stage = "enrich:remove_existing_onyx"
             if (
                 not dry_run
                 and document_type_filter is None
@@ -620,6 +669,7 @@ async def _process_page_async(
                 and config.onyx_poc.emit_enriched_markdown
             ):
                 remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
+            current_stage = "enrich:deterministic"
             enrichment = enrich_page(
                 bundle,
                 run_id=run_id,
@@ -629,6 +679,7 @@ async def _process_page_async(
                 hierarchy=hierarchy,
             )
             if provider is not None:
+                current_stage = "enrich:llm"
                 llm_result = await apply_llm_enrichment_async(
                     bundle=bundle,
                     enrichment=enrichment,
@@ -651,6 +702,7 @@ async def _process_page_async(
                 return result
             result.processed = 1
             if not dry_run and config.features.outputs.enrichment_json:
+                current_stage = "enrich:write_enrichment_json"
                 write_enrichment(enrichment_path, enrichment)
                 result.files_written += 1
                 result.output_paths.append(enrichment_path)
@@ -668,6 +720,7 @@ async def _process_page_async(
                 and config.onyx_poc.emit_enriched_markdown
             ):
                 if should_emit_onyx_markdown(enrichment, config):
+                    current_stage = "enrich:write_onyx_markdown"
                     path, warning_records = write_onyx_markdown(
                         root=onyx_root,
                         dataset_name=dataset_name,
@@ -689,8 +742,10 @@ async def _process_page_async(
                         space_key=bundle.metadata.space_key,
                     )
                 else:
+                    current_stage = "enrich:remove_filtered_onyx"
                     remove_onyx_markdown_for_page(onyx_root, dataset_name, bundle, config)
         result.enrichment = enrichment
+        current_stage = "enrich:build_document_index"
         result.document_row = document_index_row(
             bundle,
             enrichment,
@@ -726,21 +781,22 @@ async def _process_page_async(
                 }
             )
     except Exception as exc:
-        failure = PageFailure(
+        failure = page_failure_from_exception(
+            exc=exc,
+            bundle=bundle,
             run_id=run_id,
             dataset_name=dataset_name,
-            generated_at=utc_now(),
-            document_id=bundle.document_id,
-            page_id=bundle.metadata.page_id,
-            space_key=bundle.metadata.space_key,
-            title=bundle.metadata.title,
-            source_updated_at=bundle.metadata.updated_at,
-            source_content_hash=bundle.source_content_hash,
-            stage="enrich",
-            error_type=type(exc).__name__,
-            message=str(exc),
-            retryable=False,
+            stage=current_stage,
+            config=config,
             suggested_action="Inspect the source page artifact and rerun this page.",
+            error_context={
+                "enrichment_path": str(enrichment_path),
+                "onyx_root": str(onyx_root),
+                "provider": getattr(provider, "name", None) if provider is not None else None,
+                "document_type_filter": document_type_filter,
+                "changed_only": changed_only,
+                "force": force,
+            },
         )
         result.failures.append(failure)
         if event_callback:
