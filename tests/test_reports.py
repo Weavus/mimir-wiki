@@ -4,10 +4,12 @@ from pathlib import Path
 
 from mimir_wiki.reports import (
     VisualReportPage,
+    audit_onyx_exports,
     write_duplicate_candidates_report,
     write_high_value_sources_report,
     write_high_value_subtrees_report,
     write_llm_usage_report,
+    write_onyx_export_integrity_report,
     write_onyx_export_risk_report,
     write_page_failures_report,
     write_visual_extraction_report,
@@ -194,6 +196,40 @@ def test_onyx_export_risk_report_flags_restricted_content(tmp_path: Path) -> Non
     assert "customer_confidential" in content
     assert "contains_customer_case_data" in content
     assert "Public Overview" not in content
+
+
+def test_onyx_export_integrity_report_flags_and_reconciles_files(tmp_path: Path) -> None:
+    current = _row("1", "Current Runbook", "0000000000000001", "0000000000000001")
+    dataset_dir = tmp_path / "dist" / "tiny" / "SPACE"
+    dataset_dir.mkdir(parents=True)
+    keep = dataset_dir / "1-current-runbook.md"
+    duplicate = dataset_dir / "1-old-current-runbook.md"
+    stale = dataset_dir / "999-stale-runbook.md"
+    unparseable = dataset_dir / "not-a-page.md"
+    for path in (keep, duplicate, stale, unparseable):
+        path.write_text("# doc", encoding="utf-8")
+
+    report_path = write_onyx_export_integrity_report(
+        out_dir=tmp_path / "reports",
+        onyx_root=tmp_path / "dist",
+        dataset_name="tiny",
+        document_rows=[current],
+    )
+    content = report_path.read_text(encoding="utf-8")
+    assert "stale" in content
+    assert "duplicate" in content
+    assert "unparseable" in content
+
+    audit = audit_onyx_exports(
+        onyx_root=tmp_path / "dist",
+        dataset_name="tiny",
+        document_rows=[current],
+        reconcile=True,
+    )
+    assert stale in audit.removed_files
+    assert len(audit.duplicate_files) == 1
+    assert not stale.exists()
+    assert sum(path.exists() for path in (keep, duplicate)) == 1
 
 
 def test_visual_extraction_report_includes_operational_triage_sections(

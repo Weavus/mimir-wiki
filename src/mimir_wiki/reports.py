@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,11 +27,71 @@ class VisualReportPage:
     discovered_image_count: int | None = None
 
 
+@dataclass(frozen=True)
+class OnyxExportAudit:
+    current_files: int
+    stale_files: list[Path]
+    duplicate_files: list[Path]
+    unparseable_files: list[Path]
+    removed_files: list[Path]
+
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.stale_files or self.duplicate_files or self.unparseable_files)
+
+
 def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join("---" for _ in headers) + " |"]
     for row in rows:
         lines.append("| " + " | ".join(cell.replace("\n", " ") for cell in row) + " |")
     return "\n".join(lines)
+
+
+def audit_onyx_exports(
+    *,
+    onyx_root: Path,
+    dataset_name: str,
+    document_rows: list[DocumentIndexRow],
+    reconcile: bool = False,
+) -> OnyxExportAudit:
+    dataset_root = onyx_root / dataset_name
+    if not dataset_root.exists():
+        return OnyxExportAudit(0, [], [], [], [])
+    current_page_ids = {row.page_id for row in document_rows}
+    files_by_page_id: dict[str, list[Path]] = defaultdict(list)
+    unparseable: list[Path] = []
+    for path in sorted(dataset_root.glob("**/*.md")):
+        match = re.match(r"^(\d+)-.+\.md$", path.name)
+        if match is None:
+            unparseable.append(path)
+            continue
+        files_by_page_id[match.group(1)].append(path)
+    stale = [
+        path
+        for page_id, paths in files_by_page_id.items()
+        if page_id not in current_page_ids
+        for path in paths
+    ]
+    duplicate_files: list[Path] = []
+    for page_id, paths in files_by_page_id.items():
+        if page_id not in current_page_ids or len(paths) < 2:
+            continue
+        keep = sorted(paths, key=lambda path: (path.stat().st_mtime_ns, str(path)), reverse=True)[0]
+        duplicate_files.extend(path for path in paths if path != keep)
+    removed: list[Path] = []
+    if reconcile:
+        for path in sorted(stale + duplicate_files):
+            path.unlink(missing_ok=True)
+            removed.append(path)
+    current_files = sum(
+        1
+        for page_id, paths in files_by_page_id.items()
+        if page_id in current_page_ids
+        for _ in paths
+    )
+    if reconcile:
+        current_files = max(0, current_files - len(duplicate_files))
+    return OnyxExportAudit(current_files, stale, duplicate_files, unparseable, removed)
 
 
 def write_cache_validation_report(result: ValidationResult, out_dir: Path) -> Path:
@@ -342,6 +403,68 @@ Onyx connector.
 {table}
 """
     path = out_dir / "onyx_export_risk.md"
+    atomic_write_text(path, content)
+    return path
+
+
+def write_onyx_export_integrity_report(
+    *,
+    out_dir: Path,
+    onyx_root: Path,
+    dataset_name: str,
+    document_rows: list[DocumentIndexRow],
+    reconcile: bool = False,
+) -> Path:
+    audit = audit_onyx_exports(
+        onyx_root=onyx_root,
+        dataset_name=dataset_name,
+        document_rows=document_rows,
+        reconcile=reconcile,
+    )
+    summary_rows = [
+        ["Current page files", str(audit.current_files)],
+        ["Stale files", str(len(audit.stale_files))],
+        ["Duplicate page files", str(len(audit.duplicate_files))],
+        ["Unparseable files", str(len(audit.unparseable_files))],
+        ["Removed files", str(len(audit.removed_files))],
+    ]
+    issue_rows = (
+        [["stale", str(path)] for path in audit.stale_files[:100]]
+        + [["duplicate", str(path)] for path in audit.duplicate_files[:100]]
+        + [["unparseable", str(path)] for path in audit.unparseable_files[:100]]
+    )
+    issues = (
+        markdown_table(["Issue", "Path"], issue_rows)
+        if issue_rows
+        else "No Onyx export integrity issues found."
+    )
+    removed = (
+        markdown_table(["Removed path"], [[str(path)] for path in audit.removed_files[:200]])
+        if audit.removed_files
+        else "No files removed."
+    )
+    mode = "reconciled" if reconcile else "audit only"
+    content = f"""# Onyx Export Integrity
+
+Dataset: {dataset_name}
+
+Onyx root: `{onyx_root}`
+
+Mode: {mode}
+
+## Summary
+
+{markdown_table(["Metric", "Count"], summary_rows)}
+
+## Issues
+
+{issues}
+
+## Reconciliation
+
+{removed}
+"""
+    path = out_dir / "onyx_export_integrity.md"
     atomic_write_text(path, content)
     return path
 
