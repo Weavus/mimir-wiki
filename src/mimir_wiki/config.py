@@ -233,6 +233,7 @@ class OnyxPocConfig(BaseModel):
     max_visual_images: int = 20
     max_visual_ocr_chars: int = 2000
     exclude_audiences: list[str] = Field(default_factory=list)
+    exclude_content_availability: list[str] = Field(default_factory=list)
     exclude_sensitivities: list[str] = Field(default_factory=list)
     exclude_review_flags: list[str] = Field(default_factory=list)
     risk_gate_threshold: int | None = None

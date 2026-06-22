@@ -95,6 +95,8 @@ def onyx_export_exclusion_reasons(enrichment: Enrichment, config: AppConfig) -> 
         reasons.append(f"audience:{enrichment.audience}")
     if enrichment.sensitivity in config.onyx_poc.exclude_sensitivities:
         reasons.append(f"sensitivity:{enrichment.sensitivity}")
+    if enrichment.content_availability in config.onyx_poc.exclude_content_availability:
+        reasons.append(f"content_availability:{enrichment.content_availability}")
     excluded_flags = sorted(
         set(enrichment.review_flags) & set(config.onyx_poc.exclude_review_flags)
     )

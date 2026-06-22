@@ -337,6 +337,34 @@ def test_onyx_export_filters_can_exclude_configured_audiences(
     assert not list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
 
 
+def test_onyx_export_filters_can_exclude_empty_pages(tiny_cache: Path, tmp_path: Path) -> None:
+    (tiny_cache / "pages" / "123" / "clean.md").write_text(
+        "# Empty Page\n\n_No exportable body content._\n",
+        encoding="utf-8",
+    )
+    (tiny_cache / "pages" / "123" / "text.txt").write_text(
+        "Empty Page No exportable body content",
+        encoding="utf-8",
+    )
+    config = load_config(
+        cli_overrides={
+            "paths": {
+                "knowledge": str(tmp_path / "knowledge"),
+                "reports": str(tmp_path / "reports"),
+                "runs": str(tmp_path / "runs"),
+                "dist_onyx_enriched": str(tmp_path / "dist" / "onyx-enriched"),
+            },
+            "llm": {"provider": "none"},
+            "onyx_poc": {"exclude_content_availability": ["empty"]},
+        }
+    )
+
+    result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
+
+    assert result.exit_code == 0
+    assert not list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
+
+
 def test_performance_test_subtype_maps_unknown_to_reference(
     tiny_cache: Path, tmp_path: Path
 ) -> None:
