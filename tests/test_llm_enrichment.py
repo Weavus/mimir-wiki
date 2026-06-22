@@ -96,6 +96,13 @@ class JsonProvider:
         return LLMResponse(text=text, model="mock-model", input_tokens=10, output_tokens=5)
 
 
+class ExplodingProvider:
+    provider_name = "mock"
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        raise OSError("socket exploded")
+
+
 def test_llm_enrichment_merges_outputs_and_uses_cache(tiny_cache: Path, tmp_path: Path) -> None:
     bundle = CacheReader(tiny_cache).iter_pages()[0]
     config = load_config(
@@ -163,6 +170,56 @@ def test_llm_enrichment_merges_outputs_and_uses_cache(tiny_cache: Path, tmp_path
     )
     assert provider.calls == 3
     assert all(usage.cached for usage in second.usage)
+
+
+def test_llm_enrichment_keeps_deterministic_output_on_unexpected_errors(
+    tiny_cache: Path, tmp_path: Path
+) -> None:
+    bundle = CacheReader(tiny_cache).iter_pages()[0]
+    config = load_config(
+        config_path=tmp_path / "missing.yaml",
+        cli_overrides={
+            "paths": {"llm_cache": str(tmp_path / "llm-cache")},
+            "features": {
+                "llm": {
+                    "enabled": True,
+                    "tasks": {
+                        "classification": False,
+                        "summary": True,
+                        "keywords": False,
+                        "themes": False,
+                        "concepts": False,
+                        "candidate_entities": False,
+                        "operational_signals": False,
+                        "quality_warnings": False,
+                    },
+                }
+            },
+            "llm": {"provider": "openai", "model": "mock-model", "task_bundles": {}},
+        },
+    )
+    enrichment = enrich_page(
+        bundle,
+        run_id="run-1",
+        dataset_name="tiny",
+        config=config,
+        generated_at="2026-06-17T00:00:00Z",
+    )
+
+    result = apply_llm_enrichment(
+        bundle=bundle,
+        enrichment=enrichment,
+        config=config,
+        run_id="run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        provider=ExplodingProvider(),
+    )
+
+    assert not result.failures
+    assert result.enrichment.short_summary
+    assert result.enrichment.llm_failures[0]["error_type"] == "OSError"
+    assert result.warnings[0].warning_type == "llm_task_failed:summary"
 
 
 def test_llm_task_bundles_reduce_calls_and_merge_outputs(tiny_cache: Path, tmp_path: Path) -> None:

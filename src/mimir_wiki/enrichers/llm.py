@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
@@ -28,7 +28,6 @@ from mimir_wiki.enrichers.deterministic import (
 )
 from mimir_wiki.hierarchy import adjust_quality_for_hierarchy
 from mimir_wiki.llm.base import (
-    LLMError,
     LLMProvider,
     LLMRequest,
     LLMResponse,
@@ -516,7 +515,7 @@ async def _apply_llm_enrichment_async(
                             "output_tokens": response.output_tokens,
                         }
                     )
-            except (LLMError, ValueError, ValidationError) as exc:
+            except Exception as exc:
                 failure = _failure(
                     run_id=run_id,
                     dataset_name=dataset_name,
