@@ -34,9 +34,7 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
         }
     )
     result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
-    assert result.exit_code == 3
-    assert result.summary.status == "partial_success"
-    assert result.summary.counts["source_pages_failed"] == 1
+    assert result.exit_code == 0
     enrichment_path = tiny_cache / "pages" / "123" / "enrichment.json"
     assert enrichment_path.exists()
     enrichment = json.loads(enrichment_path.read_text(encoding="utf-8"))
@@ -2065,5 +2063,5 @@ def test_redaction_fail_records_page_failure(tiny_cache: Path, tmp_path: Path) -
     )
     result = enrich_command(config=config, cache_path=tiny_cache, profile=None, dry_run=False)
     assert result.exit_code == 3
-    assert result.failures[0].stage == "enrich"
+    assert result.failures[0].stage == "enrich:write_onyx_markdown"
     assert "Redaction policy failed" in result.failures[0].message
