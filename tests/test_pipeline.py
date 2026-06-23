@@ -74,6 +74,7 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     ]
     assert document_index[0]["parent_title"] == "Runbooks"
     assert document_index[0]["page_role"] == "runbook_detail"
+    assert document_index[0]["quality_band"] == enrichment["quality_band"]
     onyx_files = list((tmp_path / "dist" / "onyx-enriched" / "tiny" / "IDENTITY").glob("*.md"))
     assert len(onyx_files) == 1
     first_line = onyx_files[0].read_text(encoding="utf-8").splitlines()[0]
@@ -86,6 +87,8 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert "run_id" not in metadata
     assert "## Answer Summary" in onyx_content
     assert "## Key Facts" in onyx_content
+    assert "LLM enrichment status: `complete_or_not_used`" in onyx_content
+    assert "## LLM Enrichment Status" in onyx_content
     assert "- Parent section: Runbooks" in onyx_content
     assert "- Page role: runbook_detail" in onyx_content
     assert onyx_content.index("## Source Content") < onyx_content.index("## Enrichment Details")

@@ -143,6 +143,7 @@ def render_markdown(
     )
     warning_lines = "\n".join(f"- {warning}" for warning in enrichment.warnings) or "- none"
     review_flag_lines = "\n".join(f"- {flag}" for flag in enrichment.review_flags) or "- none"
+    llm_failure_lines = render_llm_failures(enrichment)
     warning_heading = (
         "Operational Gaps"
         if enrichment.document_type in {"runbook", "support_model"}
@@ -171,6 +172,8 @@ Audience: `{enrichment.audience}`
 Sensitivity: `{enrichment.sensitivity}`
 
 Review flags: `{", ".join(enrichment.review_flags) if enrichment.review_flags else "none"}`
+
+LLM enrichment status: `{llm_enrichment_status(enrichment)}`
 
 ## Key Facts
 
@@ -236,8 +239,31 @@ Hierarchy depth: {enrichment.hierarchy.depth}
 Parent section: {enrichment.hierarchy.parent_title or "none"}
 Page role: {enrichment.hierarchy.page_role}
 Section path: {enrichment.hierarchy.section_path or "unknown"}
+
+## LLM Enrichment Status
+
+{llm_failure_lines}
 """
     return first_line + body, truncation_warnings
+
+
+def llm_enrichment_status(enrichment: Enrichment) -> str:
+    return "partial_fallback" if enrichment.llm_failures else "complete_or_not_used"
+
+
+def render_llm_failures(enrichment: Enrichment) -> str:
+    if not enrichment.llm_failures:
+        return "No LLM task failures recorded for this page."
+    lines = [
+        "Deterministic enrichment was retained for this page after one or more LLM task failures."
+    ]
+    for failure in enrichment.llm_failures[:10]:
+        context = failure.get("error_context") if isinstance(failure, dict) else None
+        task = context.get("task") if isinstance(context, dict) else failure.get("stage", "unknown")
+        provider = context.get("provider") if isinstance(context, dict) else "unknown"
+        model = context.get("model") if isinstance(context, dict) else "unknown"
+        lines.append(f"- {task}: {failure.get('error_type', 'unknown')} using {provider}/{model}")
+    return "\n".join(lines)
 
 
 def render_visual_extraction(bundle: PageBundle, config: AppConfig) -> str:

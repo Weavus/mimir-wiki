@@ -67,6 +67,7 @@ def document_index_row(
         document_type_confidence=enrichment.document_type_confidence,
         document_subtype=enrichment.document_subtype,
         content_availability=enrichment.content_availability,
+        quality_band=enrichment.quality_band,
         status_flags=enrichment.status_flags,
         review_flags=enrichment.review_flags,
         audience=enrichment.audience,

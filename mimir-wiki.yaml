@@ -273,6 +273,21 @@ visual_extraction:
   model: gpt-5.4-mini
   prompt_version: visual-ocr-v1
   max_images_per_page: 20
+  # Optional targeted override for high-value screenshot-heavy pages. These are
+  # the current top CIAME pages with omitted visual evidence from the latest
+  # report; leave empty or lower the cap for cheaper broad runs.
+  high_priority_max_images_per_page: 80
+  high_priority_page_ids:
+    - "1768500986"
+    - "1537153129"
+    - "1537152944"
+    - "1537154285"
+    - "959371960"
+    - "993375400"
+    - "993375329"
+    - "1253361284"
+    - "1809825191"
+    - "1845115832"
 
 redaction:
   enabled: true

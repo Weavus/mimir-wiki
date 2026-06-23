@@ -10,6 +10,7 @@ from mimir_wiki.reports import (
     write_fact_quality_report,
     write_high_value_sources_report,
     write_high_value_subtrees_report,
+    write_llm_failures_report,
     write_llm_usage_report,
     write_onyx_export_integrity_report,
     write_onyx_export_risk_report,
@@ -79,6 +80,7 @@ def test_duplicate_report_includes_cluster_recommendation(tmp_path: Path) -> Non
     assert "## Clusters" in content
     assert "Canonical candidate" in content
     assert "Latest member" in content
+    assert "Latest production member" in content
     assert "SPACE:1" in content
 
 
@@ -158,7 +160,71 @@ def test_llm_usage_report_includes_cache_hit_rate(tmp_path: Path) -> None:
     )
     content = path.read_text(encoding="utf-8")
     assert "Cache hit rate" in content
+    assert "Live calls" in content
+    assert "Cost status" in content
+    assert "not configured" in content
     assert "50%" in content
+
+
+def test_llm_failures_report_lists_fallback_pages(tmp_path: Path) -> None:
+    enrichment = Enrichment(
+        run_id="run-1",
+        generated_at="2026-06-17T00:00:00Z",
+        dataset_name="tiny",
+        document_id="confluence:SPACE:1",
+        page_id="1",
+        space_key="SPACE",
+        source_content_hash="sha256:a",
+        enriched_at="2026-06-17T00:00:00Z",
+        ONYX_METADATA=OnyxMetadata(
+            link="https://example.com",
+            file_display_name="Fallback Doc",
+            doc_updated_at="2026-06-17T00:00:00Z",
+        ),
+        document_type="runbook",
+        document_type_confidence=0.8,
+        short_summary="summary",
+        detailed_summary="details",
+        quality=Quality(
+            freshness_score=80,
+            authority_score=80,
+            completeness_score=80,
+            operational_value_score=80,
+            ownership_clarity_score=80,
+            staleness_risk_score=20,
+            contradiction_risk_score=10,
+            overall_score=80,
+        ),
+        quality_band="good",
+        confidence=0.8,
+        llm_failures=[
+            {
+                "stage": "llm.summary",
+                "error_type": "SSLError",
+                "message": "ssl failed",
+                "error_context": {
+                    "task": "summary",
+                    "provider": "azure-ai-foundry",
+                    "model": "gpt-5.4-mini",
+                    "prompt_version": "summary-v1",
+                },
+            }
+        ],
+        signatures=EnrichmentSignature(
+            source_content_hash="sha256:a",
+            prompt_version="v1",
+            provider="none",
+            model_or_deployment="none",
+            tasks=[],
+            enrichment_config_hash="hash",
+        ),
+    )
+
+    path = write_llm_failures_report(out_dir=tmp_path, enrichments=[enrichment])
+    content = path.read_text(encoding="utf-8")
+    assert "Fallback Doc" in content
+    assert "deterministic_fallback_retained" in content
+    assert "azure-ai-foundry" in content
 
 
 def test_page_failures_report_summarizes_failures(tmp_path: Path) -> None:
@@ -361,6 +427,8 @@ def test_entity_and_fact_quality_reports(tmp_path: Path) -> None:
     assert "Contact/link records" in entity_content
     assert "contact_link_record" in entity_content
     fact_content = fact_path.read_text(encoding="utf-8")
+    assert "# Evidence Hint Quality" in fact_content
+    assert "not trusted structured facts" in fact_content
     assert "Evidence hints" in fact_content
     assert "Downstream-usable facts" in fact_content
     assert "supported_by" in fact_content

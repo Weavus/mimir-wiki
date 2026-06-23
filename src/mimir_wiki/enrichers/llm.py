@@ -1161,6 +1161,11 @@ def _collect_strings(payloads: list[dict[str, Any]], key: str) -> list[str]:
 
 def sanitize_generated_text(value: str) -> str:
     replacements = [
+        (r"\bprovided confluence chunk\b", "provided Confluence source excerpt"),
+        (r"\bsupplied confluence chunk\b", "supplied Confluence source excerpt"),
+        (r"\bthis confluence chunk\b", "this Confluence source excerpt"),
+        (r"\bthe confluence chunk\b", "the Confluence source excerpt"),
+        (r"\bconfluence chunk\b", "Confluence source excerpt"),
         (r"\bdocument chunk\b", "document"),
         (r"\bsource chunk\b", "source excerpt"),
         (r"\bthe chunk\b", "the document"),

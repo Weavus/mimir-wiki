@@ -653,16 +653,26 @@ def claim_type_for_predicate(predicate: str) -> str:
     return "unknown"
 
 
-def summarize(bundle: PageBundle, document_type: str, keywords: list[str]) -> tuple[str, str]:
+def summarize(
+    bundle: PageBundle, document_type: str, keywords: list[str], document_subtype: str | None = None
+) -> tuple[str, str]:
     clean_text = re.sub(r"\s+", " ", strip_front_matter(bundle.clean_markdown)).strip()
+    headings = extract_headings(bundle.clean_markdown)[:4]
     if clean_text:
         first_sentence = re.split(r"(?<=[.!?])\s+", clean_text, maxsplit=1)[0]
         first_sentence = first_sentence[:260].strip()
     else:
         first_sentence = bundle.metadata.title
     keyword_text = ", ".join(keywords[:8]) if keywords else "no deterministic keywords"
-    short = f"{bundle.metadata.title} is classified as {document_type}."
-    detailed = f"{first_sentence} Deterministic signals include: {keyword_text}."
+    subtype_text = f" ({document_subtype})" if document_subtype else ""
+    parent_text = f" in {bundle.ancestor_titles[-1]}" if bundle.ancestor_titles else ""
+    short = f"{bundle.metadata.title} is a {document_type}{subtype_text} source{parent_text}."
+    heading_text = ", ".join(headings) if headings else "no explicit headings"
+    detailed = (
+        f"This source is classified from deterministic title, hierarchy and content signals. "
+        f"Top headings: {heading_text}. Opening source text: {first_sentence}. "
+        f"Key deterministic terms: {keyword_text}."
+    )
     return short, detailed
 
 
@@ -1184,7 +1194,7 @@ def enrich_page(
     quality = adjust_quality_for_content_availability(quality, availability)
     band = quality_band(quality.overall_score)
     historical, current = currentness(document_type, flags, bundle.metadata.updated_at)
-    short_summary, detailed_summary = summarize(bundle, document_type, keywords)
+    short_summary, detailed_summary = summarize(bundle, document_type, keywords, document_subtype)
     signature = EnrichmentSignature(
         source_content_hash=bundle.source_content_hash,
         prompt_version=config.llm.prompt_version,

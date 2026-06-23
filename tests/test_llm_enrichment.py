@@ -473,6 +473,10 @@ def test_entity_type_normalization_handles_urls_contacts_and_queues() -> None:
 def test_generated_text_sanitizer_removes_chunk_wording() -> None:
     assert sanitize_generated_text("The chunk covers setup.") == "the document covers setup."
     assert (
+        sanitize_generated_text("This Confluence chunk identifies a design note.")
+        == "this Confluence source excerpt identifies a design note."
+    )
+    assert (
         sanitize_generated_text("This document chunk contains metadata.")
         == "This document contains metadata."
     )

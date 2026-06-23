@@ -42,6 +42,7 @@ from mimir_wiki.reports import (
     write_fact_quality_report,
     write_high_value_sources_report,
     write_high_value_subtrees_report,
+    write_llm_failures_report,
     write_llm_usage_report,
     write_missing_owners_report,
     write_onyx_export_integrity_report,
@@ -1985,7 +1986,7 @@ def report_command(
     failures: list[PageFailure] = []
     source_run_summaries: list[RunSummary] = []
 
-    reports_planned = 17
+    reports_planned = 18
     reports_written = 0
 
     def emit_progress(current_report: str = "-") -> None:
@@ -2141,6 +2142,11 @@ def report_command(
             (
                 "llm_usage.md",
                 lambda: write_llm_usage_report(out_dir=reports_dir, usage=llm_usage),
+                "report",
+            ),
+            (
+                "llm_failures.md",
+                lambda: write_llm_failures_report(out_dir=reports_dir, enrichments=enrichments),
                 "report",
             ),
             (

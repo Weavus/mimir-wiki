@@ -681,6 +681,57 @@ def write_entity_quality_report(*, out_dir: Path, entity_rows: list[CandidateEnt
     return path
 
 
+def write_llm_failures_report(*, out_dir: Path, enrichments: list[Enrichment]) -> Path:
+    rows: list[list[str]] = []
+    for enrichment in sorted(enrichments, key=lambda item: (item.space_key, item.page_id)):
+        for failure in enrichment.llm_failures:
+            context = failure.get("error_context")
+            context = context if isinstance(context, dict) else {}
+            rows.append(
+                [
+                    enrichment.space_key,
+                    enrichment.page_id,
+                    enrichment.ONYX_METADATA.file_display_name,
+                    str(context.get("task") or failure.get("stage") or "unknown"),
+                    str(context.get("provider") or "unknown"),
+                    str(context.get("model") or "unknown"),
+                    str(context.get("prompt_version") or "unknown"),
+                    str(failure.get("error_type") or "unknown"),
+                    str(failure.get("message") or "")[:300],
+                    "deterministic_fallback_retained",
+                ]
+            )
+    table = (
+        markdown_table(
+            [
+                "Space",
+                "Page ID",
+                "Title",
+                "Task",
+                "Provider",
+                "Model",
+                "Prompt version",
+                "Error type",
+                "Message",
+                "Fallback",
+            ],
+            rows[:300],
+        )
+        if rows
+        else "No LLM task failures recorded in current enrichment artifacts."
+    )
+    content = f"""# LLM Failures
+
+Pages listed here were still emitted with deterministic enrichment fallback, but one or more
+LLM tasks failed.
+
+{table}
+"""
+    path = out_dir / "llm_failures.md"
+    atomic_write_text(path, content)
+    return path
+
+
 def entity_quality_tier(row: CandidateEntityRow) -> str:
     if row.entity_type in {"url", "contact", "ticket"}:
         return "contact_link_record"
@@ -726,7 +777,10 @@ def write_fact_quality_report(*, out_dir: Path, fact_rows: list[CandidateFactRow
         if low_rows
         else "No evidence hints found."
     )
-    content = f"""# Fact Quality
+    content = f"""# Evidence Hint Quality
+
+The current `facts.jsonl` rows are candidate evidence hints. They are not trusted structured
+facts until they meet downstream confidence and validation gates.
 
 ## Summary
 
@@ -868,6 +922,7 @@ def write_duplicate_candidates_report(
                 "Count",
                 "Canonical candidate",
                 "Latest member",
+                "Latest production member",
                 "Documents",
             ],
             cluster_rows[:100],
@@ -911,6 +966,7 @@ def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[s
         seen_clusters.add(doc_keys)
         keeper = recommended_duplicate_keeper(group)
         latest = latest_duplicate_member(group)
+        latest_prod = latest_production_member(group)
         family = duplicate_family_metadata(group)
         rows.append(
             [
@@ -922,6 +978,11 @@ def duplicate_cluster_rows(document_rows: list[DocumentIndexRow]) -> list[list[s
                 str(len(group)),
                 f"{keeper.space_key}:{keeper.page_id} {keeper.title}",
                 f"{latest.space_key}:{latest.page_id} {latest.title}",
+                (
+                    f"{latest_prod.space_key}:{latest_prod.page_id} {latest_prod.title}"
+                    if latest_prod is not None
+                    else "-"
+                ),
                 ", ".join(doc_keys[:20]),
             ]
         )
@@ -1060,6 +1121,13 @@ def latest_duplicate_member(group: list[DocumentIndexRow]) -> DocumentIndexRow:
     ]
 
 
+def latest_production_member(group: list[DocumentIndexRow]) -> DocumentIndexRow | None:
+    production_rows = [row for row in group if re.search(r"\bprod(?:uction)?\b", row.title, re.I)]
+    if not production_rows:
+        return None
+    return latest_duplicate_member(production_rows)
+
+
 def duplicate_family_label(key: str, group: list[DocumentIndexRow]) -> str:
     key_lower = key.lower()
     titles = " ".join(row.title.lower() for row in group)
@@ -1068,7 +1136,7 @@ def duplicate_family_label(key: str, group: list[DocumentIndexRow]) -> str:
         return "IP Whitelisting installation guides"
     if "account linking service" in combined:
         return "Account Linking Service installation guides"
-    if "scim admin" in combined:
+    if "scim admin" in combined or "admin api" in combined:
         return "SCIM Admin API document family"
     if "scim api" in combined or "api guide installation scim" in combined:
         return "SCIM API installation guides"
@@ -1092,12 +1160,20 @@ def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
                 model,
                 task,
                 str(len(items)),
+                str(len(items) - cached),
                 str(sum(item.input_tokens or 0 for item in items)),
                 str(sum(item.output_tokens or 0 for item in items)),
+                str(sum(item.input_tokens or 0 for item in items if not item.cached)),
+                str(sum(item.output_tokens or 0 for item in items if not item.cached)),
                 str(cached),
                 f"{hit_rate:.0%}",
                 str(sum(item.retries for item in items)),
                 f"{sum(item.estimated_cost_usd or 0 for item in items):.6f}",
+                (
+                    "configured"
+                    if any(item.estimated_cost_usd is not None for item in items)
+                    else "not configured"
+                ),
             ]
         )
     table = (
@@ -1107,12 +1183,16 @@ def write_llm_usage_report(*, out_dir: Path, usage: list[LLMUsage]) -> Path:
                 "Model",
                 "Task",
                 "Calls",
+                "Live calls",
                 "Input tokens",
                 "Output tokens",
+                "Live input tokens",
+                "Live output tokens",
                 "Cached",
                 "Cache hit rate",
                 "Retries",
                 "Est. cost USD",
+                "Cost status",
             ],
             rows,
         )
@@ -1458,6 +1538,7 @@ def write_enrichment_reports(
         write_attachment_followups_report(out_dir=out_dir, document_rows=document_rows),
         write_duplicate_candidates_report(out_dir=out_dir, document_rows=document_rows),
         write_llm_usage_report(out_dir=out_dir, usage=llm_usage or []),
+        write_llm_failures_report(out_dir=out_dir, enrichments=enrichments),
         write_page_failures_report(out_dir=out_dir, failures=failures or []),
         write_visual_extraction_report(
             out_dir=out_dir, dataset_name=dataset_name, pages=visual_pages or []
