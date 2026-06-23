@@ -779,8 +779,9 @@ def write_fact_quality_report(*, out_dir: Path, fact_rows: list[CandidateFactRow
     )
     content = f"""# Evidence Hint Quality
 
-The current `facts.jsonl` rows are candidate evidence hints. They are not trusted structured
-facts until they meet downstream confidence and validation gates.
+Rows in `facts.jsonl` are downstream-usable facts. Rows in `evidence_hints.jsonl` are low
+confidence candidate evidence hints and are not trusted structured facts until they meet
+downstream confidence and validation gates.
 
 ## Summary
 
@@ -1130,13 +1131,16 @@ def latest_production_member(group: list[DocumentIndexRow]) -> DocumentIndexRow 
 
 def duplicate_family_label(key: str, group: list[DocumentIndexRow]) -> str:
     key_lower = key.lower()
-    titles = " ".join(row.title.lower() for row in group)
+    title_values = [row.title.lower() for row in group]
+    titles = " ".join(title_values)
     combined = f"{key_lower} {titles}"
     if "ip whitelisting" in combined or "ip whitelist" in combined:
         return "IP Whitelisting installation guides"
     if "account linking service" in combined:
         return "Account Linking Service installation guides"
-    if "scim admin" in combined or "admin api" in combined:
+    admin_count = sum(1 for title in title_values if "scim admin" in title or "admin api" in title)
+    scim_api_count = sum(1 for title in title_values if "scim api" in title)
+    if admin_count > scim_api_count:
         return "SCIM Admin API document family"
     if "scim api" in combined or "api guide installation scim" in combined:
         return "SCIM API installation guides"

@@ -103,6 +103,23 @@ class ExplodingProvider:
         raise OSError("socket exploded")
 
 
+class RepairingProvider:
+    provider_name = "mock"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            text = '{"short_summary":"broken" "detailed_summary":"bad"}'
+        else:
+            text = json.dumps(
+                {"short_summary": "Repaired summary.", "detailed_summary": "Repaired details."}
+            )
+        return LLMResponse(text=text, model="mock-model", input_tokens=10, output_tokens=5)
+
+
 def test_llm_enrichment_merges_outputs_and_uses_cache(tiny_cache: Path, tmp_path: Path) -> None:
     bundle = CacheReader(tiny_cache).iter_pages()[0]
     config = load_config(
@@ -223,6 +240,75 @@ def test_llm_enrichment_keeps_deterministic_output_on_unexpected_errors(
     assert result.enrichment.llm_failures[0]["error_context"]["provider"] == "openai"
     assert result.enrichment.llm_failures[0]["error_context"]["model"] == "mock-model"
     assert result.warnings[0].warning_type == "llm_task_failed:summary"
+
+
+def test_llm_enrichment_refreshes_invalid_cached_response(tiny_cache: Path, tmp_path: Path) -> None:
+    bundle = CacheReader(tiny_cache).iter_pages()[0]
+    config = load_config(
+        config_path=tmp_path / "missing.yaml",
+        cli_overrides={
+            "paths": {"llm_cache": str(tmp_path / "llm-cache")},
+            "features": {
+                "llm": {
+                    "enabled": True,
+                    "tasks": {
+                        "classification": False,
+                        "summary": True,
+                        "keywords": False,
+                        "themes": False,
+                        "concepts": False,
+                        "candidate_entities": False,
+                        "operational_signals": False,
+                        "quality_warnings": False,
+                    },
+                }
+            },
+            "llm": {"provider": "openai", "model": "mock-model", "task_bundles": {}},
+        },
+    )
+    provider = RepairingProvider()
+    enrichment = enrich_page(
+        bundle,
+        run_id="run-1",
+        dataset_name="tiny",
+        config=config,
+        generated_at="2026-06-17T00:00:00Z",
+    )
+    first = apply_llm_enrichment(
+        bundle=bundle,
+        enrichment=enrichment,
+        config=config,
+        run_id="run-1",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        provider=provider,
+    )
+    assert first.enrichment.llm_failures
+
+    second_enrichment = enrich_page(
+        bundle,
+        run_id="run-2",
+        dataset_name="tiny",
+        config=config,
+        generated_at="2026-06-17T00:00:00Z",
+    )
+    second = apply_llm_enrichment(
+        bundle=bundle,
+        enrichment=second_enrichment,
+        config=config,
+        run_id="run-2",
+        dataset_name="tiny",
+        generated_at="2026-06-17T00:00:00Z",
+        provider=provider,
+    )
+
+    assert not second.enrichment.llm_failures
+    assert second.enrichment.short_summary == "Repaired summary."
+    assert provider.calls == 2
+    assert [usage.cached for usage in second.usage] == [True, False]
+    assert any(
+        warning.warning_type == "llm_cached_response_invalid:summary" for warning in second.warnings
+    )
 
 
 def test_llm_task_bundles_reduce_calls_and_merge_outputs(tiny_cache: Path, tmp_path: Path) -> None:

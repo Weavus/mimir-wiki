@@ -656,13 +656,8 @@ def claim_type_for_predicate(predicate: str) -> str:
 def summarize(
     bundle: PageBundle, document_type: str, keywords: list[str], document_subtype: str | None = None
 ) -> tuple[str, str]:
-    clean_text = re.sub(r"\s+", " ", strip_front_matter(bundle.clean_markdown)).strip()
     headings = extract_headings(bundle.clean_markdown)[:4]
-    if clean_text:
-        first_sentence = re.split(r"(?<=[.!?])\s+", clean_text, maxsplit=1)[0]
-        first_sentence = first_sentence[:260].strip()
-    else:
-        first_sentence = bundle.metadata.title
+    opening_text = meaningful_opening_text(bundle)
     keyword_text = ", ".join(keywords[:8]) if keywords else "no deterministic keywords"
     subtype_text = f" ({document_subtype})" if document_subtype else ""
     parent_text = f" in {bundle.ancestor_titles[-1]}" if bundle.ancestor_titles else ""
@@ -670,10 +665,38 @@ def summarize(
     heading_text = ", ".join(headings) if headings else "no explicit headings"
     detailed = (
         f"This source is classified from deterministic title, hierarchy and content signals. "
-        f"Top headings: {heading_text}. Opening source text: {first_sentence}. "
+        f"Top headings: {heading_text}. Opening source text: {opening_text}. "
         f"Key deterministic terms: {keyword_text}."
     )
     return short, detailed
+
+
+def meaningful_opening_text(bundle: PageBundle, max_chars: int = 260) -> str:
+    lines: list[str] = []
+    for raw_line in strip_front_matter(bundle.clean_markdown).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        if line.startswith("_Source: Confluence"):
+            continue
+        if line == "---" or line.startswith("| ---"):
+            continue
+        line = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", line)
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+        line = re.sub(r"[*_`]+", "", line)
+        line = re.sub(r"\s+", " ", line).strip(" -|")
+        if line:
+            lines.append(line)
+        if len(" ".join(lines)) >= max_chars:
+            break
+    text = " ".join(lines) or bundle.metadata.title
+    text = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars].rsplit(" ", 1)[0].rstrip(" .,;:-")
+    return truncated or text[:max_chars].rstrip(" .,;:-")
 
 
 def categories_for(bundle: PageBundle, document_type: str, keywords: list[str]) -> list[str]:

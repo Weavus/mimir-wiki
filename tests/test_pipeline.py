@@ -57,15 +57,27 @@ def test_enrich_provider_none_writes_mvp_artifacts(tiny_cache: Path, tmp_path: P
     assert (tmp_path / "knowledge" / "concepts.jsonl").exists()
     assert (tmp_path / "knowledge" / "candidate_entities.jsonl").exists()
     assert (tmp_path / "knowledge" / "facts.jsonl").exists()
+    assert (tmp_path / "knowledge" / "evidence_hints.jsonl").exists()
     assert (tmp_path / "knowledge" / "visual_index.jsonl").exists()
     fact_rows = [
+        json.loads(line)
+        for line in (tmp_path / "knowledge" / "evidence_hints.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert fact_rows
+    assert {row["predicate"]: row for row in fact_rows}["has_diagnostic_step"][
+        "claim_type"
+    ] == "procedure"
+    trusted_fact_rows = [
         json.loads(line)
         for line in (tmp_path / "knowledge" / "facts.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert fact_rows
-    assert {row["predicate"]: row for row in fact_rows}["owned_by"]["claim_type"] == "ownership"
+    assert {row["predicate"]: row for row in trusted_fact_rows}["owned_by"][
+        "claim_type"
+    ] == "ownership"
     document_index = [
         json.loads(line)
         for line in (tmp_path / "knowledge" / "document_index.jsonl")

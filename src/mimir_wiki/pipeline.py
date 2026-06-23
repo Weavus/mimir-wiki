@@ -1214,6 +1214,7 @@ def enrich_command(
                 knowledge_dir / "concepts.jsonl",
                 knowledge_dir / "candidate_entities.jsonl",
                 knowledge_dir / "facts.jsonl",
+                knowledge_dir / "evidence_hints.jsonl",
                 knowledge_dir / "visual_index.jsonl",
             ]
         )
@@ -1257,7 +1258,8 @@ def enrich_command(
     exit_code = EXIT_PARTIAL_SUCCESS if context.failures or cancelled else EXIT_SUCCESS
     status = "partial_success" if context.failures or cancelled else "success"
     llm_cached_calls = sum(1 for usage in context.llm_usage if usage.cached)
-    llm_live_calls = len(context.llm_usage) - llm_cached_calls
+    llm_total_calls = len(context.llm_usage)
+    llm_live_calls = llm_total_calls - llm_cached_calls
     llm_live_input_summary = sum(
         usage.input_tokens or 0 for usage in context.llm_usage if not usage.cached
     )
@@ -1279,8 +1281,9 @@ def enrich_command(
         "changed_pages": processed,
         "unchanged_pages": skipped,
         "warnings": len(context.warnings),
-        "llm_tasks": len(context.llm_usage),
-        "llm_calls": llm_live_calls,
+        "llm_tasks": llm_total_calls,
+        "llm_calls": llm_total_calls,
+        "llm_total_calls": llm_total_calls,
         "llm_cached_calls": llm_cached_calls,
         "llm_live_calls": llm_live_calls,
         "llm_live_input_tokens": llm_live_input_summary,
@@ -2014,6 +2017,7 @@ def report_command(
     quality_scores = knowledge_dir / "quality_scores.jsonl"
     candidate_entities = knowledge_dir / "candidate_entities.jsonl"
     candidate_facts = knowledge_dir / "facts.jsonl"
+    evidence_hints = knowledge_dir / "evidence_hints.jsonl"
     if document_index.exists() and quality_scores.exists():
         document_rows = _read_document_rows(document_index)
         quality_rows = _read_quality_rows(quality_scores)
@@ -2021,6 +2025,8 @@ def report_command(
         entity_rows = _read_candidate_entity_rows(candidate_entities)
     if candidate_facts.exists():
         fact_rows = _read_candidate_fact_rows(candidate_facts)
+    if evidence_hints.exists():
+        fact_rows.extend(_read_candidate_fact_rows(evidence_hints))
     enrichments = _read_enrichments(reader, limit)
     visual_pages = _visual_report_pages(reader.iter_pages(limit=limit))
     runs_root = Path(config.paths.runs)

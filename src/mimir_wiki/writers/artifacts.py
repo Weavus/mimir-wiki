@@ -329,7 +329,12 @@ def write_global_jsonl(
         "themes.jsonl": [row.model_dump(mode="json") for row in theme_rows],
         "concepts.jsonl": [row.model_dump(mode="json") for row in concept_rows],
         "candidate_entities.jsonl": [row.model_dump(mode="json") for row in candidate_entity_rows],
-        "facts.jsonl": [row.model_dump(mode="json") for row in candidate_fact_rows],
+        "facts.jsonl": [
+            row.model_dump(mode="json") for row in candidate_fact_rows if row.confidence >= 0.7
+        ],
+        "evidence_hints.jsonl": [
+            row.model_dump(mode="json") for row in candidate_fact_rows if row.confidence < 0.7
+        ],
         "visual_index.jsonl": [row.model_dump(mode="json") for row in visual_rows],
     }
     for filename, rows in outputs.items():

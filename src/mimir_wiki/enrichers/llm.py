@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from mimir_wiki.cache_reader import PageBundle
 from mimir_wiki.config import AppConfig
@@ -456,38 +456,67 @@ async def _apply_llm_enrichment_async(
                     source_content_hash=bundle.source_content_hash,
                 )
                 result.retries += retries
-                usage = LLMUsage(
+                usage = _usage_record(
                     run_id=run_id,
                     dataset_name=dataset_name,
-                    document_id=bundle.document_id,
-                    page_id=bundle.metadata.page_id,
-                    space_key=bundle.metadata.space_key,
-                    source_updated_at=bundle.metadata.updated_at,
-                    source_content_hash=bundle.source_content_hash,
-                    task=work_item.name,
-                    provider=work_item.provider,
-                    model=response.model,
-                    prompt_version=work_item.prompt_version,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    cached=response.cached,
+                    generated_at=generated_at,
+                    bundle=bundle,
+                    work_item=work_item,
+                    response=response,
                     attempts=attempts,
                     retries=retries,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
-                    estimated_cost_usd=estimate_llm_cost(
-                        provider=work_item.provider,
-                        model=response.model,
-                        input_tokens=response.input_tokens,
-                        output_tokens=response.output_tokens,
-                        config=config,
-                    ),
-                    generated_at=generated_at,
+                    config=config,
                 )
                 result.usage.append(usage)
-                parsed, parse_warnings = parse_json_response_with_warnings(response.text)
-                payload, validation_warnings = validate_work_item_payload_with_warnings(
-                    work_item, parsed
-                )
+                try:
+                    parsed, parse_warnings = parse_json_response_with_warnings(response.text)
+                    payload, validation_warnings = validate_work_item_payload_with_warnings(
+                        work_item, parsed
+                    )
+                except (ValueError, ValidationError) as cache_exc:
+                    if not response.cached:
+                        raise
+                    result.warnings.append(
+                        _warning(
+                            run_id,
+                            dataset_name,
+                            generated_at,
+                            bundle,
+                            f"llm_cached_response_invalid:{work_item.name}",
+                            (
+                                "Cached LLM response was invalid and was refreshed live: "
+                                f"{type(cache_exc).__name__}: {cache_exc}"
+                            ),
+                        )
+                    )
+                    response, attempts, retries = await complete_with_cache(
+                        client=client,
+                        request=request,
+                        config=config,
+                        route_provider=work_item.provider,
+                        source_content_hash=bundle.source_content_hash,
+                        refresh_cache=True,
+                    )
+                    result.retries += retries
+                    result.usage.append(
+                        _usage_record(
+                            run_id=run_id,
+                            dataset_name=dataset_name,
+                            generated_at=generated_at,
+                            bundle=bundle,
+                            work_item=work_item,
+                            response=response,
+                            attempts=attempts,
+                            retries=retries,
+                            elapsed_ms=round((time.monotonic() - started) * 1000),
+                            config=config,
+                        )
+                    )
+                    parsed, parse_warnings = parse_json_response_with_warnings(response.text)
+                    payload, validation_warnings = validate_work_item_payload_with_warnings(
+                        work_item, parsed
+                    )
                 for warning_type in parse_warnings + validation_warnings:
                     result.warnings.append(
                         _warning(
@@ -720,6 +749,7 @@ async def complete_with_cache(
     config: AppConfig,
     route_provider: str,
     source_content_hash: str,
+    refresh_cache: bool = False,
 ) -> tuple[LLMResponse, int, int]:
     cache_dir = Path(config.paths.llm_cache)
     key = stable_hash(
@@ -734,7 +764,7 @@ async def complete_with_cache(
         }
     )
     cache_path = cache_dir / f"{key}.json"
-    if cache_path.exists():
+    if cache_path.exists() and not refresh_cache:
         cached = load_json(cache_path)
         return (
             LLMResponse(
@@ -758,6 +788,48 @@ async def complete_with_cache(
         },
     )
     return response, attempts, retries
+
+
+def _usage_record(
+    *,
+    run_id: str,
+    dataset_name: str,
+    generated_at: str,
+    bundle: PageBundle,
+    work_item: LLMWorkItem,
+    response: LLMResponse,
+    attempts: int,
+    retries: int,
+    elapsed_ms: int,
+    config: AppConfig,
+) -> LLMUsage:
+    return LLMUsage(
+        run_id=run_id,
+        dataset_name=dataset_name,
+        document_id=bundle.document_id,
+        page_id=bundle.metadata.page_id,
+        space_key=bundle.metadata.space_key,
+        source_updated_at=bundle.metadata.updated_at,
+        source_content_hash=bundle.source_content_hash,
+        task=work_item.name,
+        provider=work_item.provider,
+        model=response.model,
+        prompt_version=work_item.prompt_version,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        cached=response.cached,
+        attempts=attempts,
+        retries=retries,
+        elapsed_ms=elapsed_ms,
+        estimated_cost_usd=estimate_llm_cost(
+            provider=work_item.provider,
+            model=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            config=config,
+        ),
+        generated_at=generated_at,
+    )
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
