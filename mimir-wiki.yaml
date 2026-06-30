@@ -360,6 +360,20 @@ profiles:
       reports: ./reports/ciam
       runs: ./runs/ciam
 
+  heimdall:
+    paths:
+      cache: ../mimir-confluence/cache/confluence/heimdall
+      knowledge: ./knowledge/heimdall
+      reports: ./reports/heimdall
+      runs: ./runs/heimdall
+
+  sts:
+    paths:
+      cache: ../mimir-confluence/cache/confluence/sts
+      knowledge: ./knowledge/sts
+      reports: ./reports/sts
+      runs: ./runs/sts
+
   deterministic:
     llm:
       provider: none
