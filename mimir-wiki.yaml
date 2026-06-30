@@ -353,6 +353,13 @@ profiles:
       reports: ./reports/carel3support-rca
       runs: ./runs/carel3support-rca
 
+  ciam:
+    paths:
+      cache: ../mimir-confluence/cache/confluence/ciam
+      knowledge: ./knowledge/ciam
+      reports: ./reports/ciam
+      runs: ./runs/ciam
+
   deterministic:
     llm:
       provider: none
