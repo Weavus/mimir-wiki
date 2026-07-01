@@ -338,34 +338,34 @@ profiles:
       knowledge: ./knowledge/aaa-domain-application-support-core
       reports: ./reports/aaa-domain-application-support-core
       runs: ./runs/aaa-domain-application-support-core
-	  
+
   aaa-domain-application-support-ciam-forgerock:
     paths:
       cache: ../mimir-confluence/cache/confluence/aaa-domain-application-support-ciam-forgerock
       knowledge: ./knowledge/aaa-domain-application-support-ciam-forgerock
       reports: ./reports/aaa-domain-application-support-ciam-forgerock
       runs: ./runs/aaa-domain-application-support-ciam-forgerock
-	  
+
   aaa-domain-application-support-ciam-okta:
     paths:
       cache: ../mimir-confluence/cache/confluence/aaa-domain-application-support-ciam-okta
       knowledge: ./knowledge/aaa-domain-application-support-ciam-okta
       reports: ./reports/aaa-domain-application-support-ciam-okta
       runs: ./runs/aaa-domain-application-support-ciam-okta
-	  
+
   aaa-domain-application-support-ciam-ping:
     paths:
       cache: ../mimir-confluence/cache/confluence/aaa-domain-application-support-ciam-ping
       knowledge: ./knowledge/aaa-domain-application-support-ciam-ping
       reports: ./reports/aaa-domain-application-support-ciam-ping
       runs: ./runs/aaa-domain-application-support-ciam-ping
-	  
+
   aaa-domain-application-support-administration:
     paths:
       cache: ../mimir-confluence/cache/confluence/aaa-domain-application-support-administration
       knowledge: ./knowledge/aaa-domain-application-support-administration
       reports: ./reports/aaa-domain-application-support-administration
-      runs: ./runs/aaa-domain-application-support-administration	  
+      runs: ./runs/aaa-domain-application-support-administration
 
   aaa-domain-application-support-entitlement-platform:
     paths:
